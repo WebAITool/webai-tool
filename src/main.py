@@ -1,7 +1,9 @@
-from makesrs_prod import makesrs, make_tree
+from pathlib import Path
+from dev_env import prepare_dev_env
+from .makesrs_prod import makesrs, make_tree
 from lg_agent import agent
 from lg_agent import get_initial_state
-from prompts import *
+from .prompts import *
 import re
 from gener import generate
 
@@ -24,6 +26,8 @@ def count_phases(text):
 if not READ_DOC_FROM_FILE:
     print('making doc...')
     doc = makesrs(PRJPATH)
+    if doc is None:
+        raise RuntimeError("doc is None!")
     print('doc created')
     with open(docpath, 'w', encoding='utf-8') as docfile:
         docfile.write(doc)
@@ -32,6 +36,8 @@ else:
     with open(docpath, 'r', encoding='utf-8') as docfile:
         doc = docfile.read()
         print('doc readed')
+
+prepare_dev_env(Path(PRJ_DIR))
 
 config = {"recursion_limit": 250}
 impl_state = get_initial_state( 

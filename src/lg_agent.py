@@ -7,7 +7,9 @@ from langchain_core.prompts import (
     AIMessagePromptTemplate,
     ChatPromptTemplate
 )
-from makesrs_prod import make_tree
+
+from dev_env import run_pyright 
+from .makesrs_prod import make_tree
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.messages import ToolMessage
 from langchain_core.output_parsers import StrOutputParser
@@ -174,6 +176,9 @@ def code_action(state: AgentState):
         console_out = repl.run(code + f'\nprint(\'{sentinel}\')')
         if sentinel in console_out:
             action += f'\nACTION:\nexecuted code:\n{code}\nresult:\n{console_out}\n'
+
+            pyright_result = run_pyright() # TODO: do smth with it
+
             return {
                 'actions': state['actions'] + [action], 
                 'tree': make_tree(state['prjdir'])
