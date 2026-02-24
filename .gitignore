@@ -1,0 +1,11 @@
+.env
+__pycache__
+*.pyc
+.venv
+.pytest_cache/
+.ruff_cache/
+.mutmut-cache/
+dist/
+*.egg-info/
+tests/data/large_vue_py_project/
+.coverage
