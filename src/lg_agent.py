@@ -1,4 +1,5 @@
 import os
+import logging
 import dotenv
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import (
@@ -9,7 +10,7 @@ from langchain_core.prompts import (
 )
 
 from dev_env import run_pyright 
-from .makesrs_prod import make_tree
+from makesrs_prod import make_tree
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.messages import ToolMessage
 from langchain_core.output_parsers import StrOutputParser
@@ -175,10 +176,9 @@ def code_action(state: AgentState):
         print('code executing...')
         console_out = repl.run(code + f'\nprint(\'{sentinel}\')')
         if sentinel in console_out:
-            action += f'\nACTION:\nexecuted code:\n{code}\nresult:\n{console_out}\n'
-
-            pyright_result = run_pyright() # TODO: do smth with it
-
+            pyright_result = run_pyright() 
+            action += f'\nACTION:\nexecuted code:\n{code}\nresult:\n{console_out}\nPyright check:{pyright_result}\n'
+            logging.debug(action)
             return {
                 'actions': state['actions'] + [action], 
                 'tree': make_tree(state['prjdir'])
