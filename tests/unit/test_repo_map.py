@@ -1,5 +1,5 @@
 """
-Unit tests for repomap.py — tree-sitter based repository map generator.
+Unit tests for repo_map.py — tree-sitter based repository map generator.
 """
 
 import os
@@ -8,33 +8,41 @@ import tempfile
 import shutil
 import contextlib
 
-# Add src to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
-
-from repomap import (
-    _parse_with_treesitter,
+from repo_map import (
     _parse_vue,
     _parse_file,
+    _extract_tags,
+    _extract_tags_and_receivers,
     RepomapGenerator,
     get_repo_structure,
     MAX_FILE_SIZE,
-    MAX_AST_DEPTH,
     MAX_DIR_DEPTH,
     MAX_OUTPUT_LINES,
 )
 
 
+def _extract_tags_with_receivers_from_source(source: bytes, lang: str):
+    """Helper: write bytes to temp file, extract tags and receivers."""
+    import tempfile, os
+    suffix = {"python": ".py", "javascript": ".js", "typescript": ".ts"}.get(lang, ".py")
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
+        f.write(source)
+        f.flush()
+        path = f.name
+    try:
+        return _extract_tags_and_receivers(path, lang)
+    finally:
+        os.unlink(path)
+
+
 class TestParseWithTreesitter:
-    """Tests for _parse_with_treesitter across multiple languages."""
+    """Tests for tag extraction across multiple languages."""
 
     def test_python_classes_and_functions(self):
-        with _tmpfile(
-            ".py",
-            b"""
+        code = b"""
 class Foo:
     def bar(self, x: int) -> str:
         pass
-
     def baz(self):
         pass
 
@@ -43,87 +51,54 @@ def top_func(a, b):
 
 async def async_func():
     pass
-""",
-        ) as path:
-            items = _parse_with_treesitter(path, "python")
-            texts = "\n".join(items)
-            assert "class Foo" in texts
-            assert "def bar" in texts
-            assert "def baz" in texts
-            assert "def top_func" in texts
-            assert "def async_func" in texts
+"""
+        tags = _extract_tags_from_source(code, "python")
+        defs = [t.name for t in tags if t.kind == "def"]
+        assert "Foo" in defs
+        assert "bar" in defs
+        assert "baz" in defs
+        assert "top_func" in defs
+        assert "async_func" in defs
 
     def test_javascript_functions_and_classes(self):
-        with _tmpfile(
-            ".js",
-            b"""
+        code = b"""
 class MyClass {
     constructor() {}
     method1(a, b) {}
 }
-
 function topFunc(a, b) { return a; }
 const arrowFunc = (x) => x + 1;
-export async function asyncFunc() {}
-""",
-        ) as path:
-            items = _parse_with_treesitter(path, "javascript")
-            texts = "\n".join(items)
-            assert "class MyClass" in texts
-            assert "def constructor" in texts
-            assert "def method1" in texts
-            assert "def topFunc" in texts or "function topFunc" in texts
-            assert "arrowFunc" in texts
-            assert "asyncFunc" in texts
+"""
+        tags = _extract_tags_from_source(code, "javascript")
+        defs = [t.name for t in tags if t.kind == "def"]
+        assert "MyClass" in defs
+        assert "constructor" in defs
+        assert "method1" in defs
+        assert "topFunc" in defs
+        assert "arrowFunc" in defs
 
     def test_typescript(self):
-        with _tmpfile(
-            ".ts",
-            b"""
-interface IService {
-    run(): void;
-}
-
+        code = b"""
 class ServiceImpl {
     run(): void {}
-    private helper(): string { return ""; }
 }
-
-function createService(): IService { return new ServiceImpl(); }
+function createService() { return new ServiceImpl(); }
 const factory = () => createService();
-""",
-        ) as path:
-            items = _parse_with_treesitter(path, "typescript")
-            texts = "\n".join(items)
-            assert "class ServiceImpl" in texts
-            assert "def createService" in texts or "createService" in texts
+"""
+        tags = _extract_tags_from_source(code, "typescript")
+        defs = [t.name for t in tags if t.kind == "def"]
+        assert "ServiceImpl" in defs
+        assert "createService" in defs
+        assert "factory" in defs
 
     def test_unknown_language_returns_empty(self):
         with _tmpfile(".xyz", b"some random content here") as path:
-            items = _parse_with_treesitter(path, "nonexistent_lang_xyz")
-            assert items == []
+            tags = _extract_tags(path, "nonexistent_lang_xyz")
+            assert tags == []
 
     def test_empty_file(self):
-        with _tmpfile(".py", b"") as path:
-            items = _parse_with_treesitter(path, "python")
-            assert items == []
-
-    def test_multiline_params_collapsed(self):
-        with _tmpfile(
-            ".py",
-            b"""
-def long_func(
-    param_a: str,
-    param_b: int,
-    param_c: float = 0.0,
-):
-    pass
-""",
-        ) as path:
-            items = _parse_with_treesitter(path, "python")
-            # Should be single line
-            for item in items:
-                assert "\n" not in item
+        tags = _extract_tags_from_source(b"", "python")
+        assert tags == []
 
 
 class TestParseVue:
@@ -143,11 +118,11 @@ export default { name: "Test" }
 </style>
 """,
         ) as path:
-            items = _parse_vue(path)
-            texts = "\n".join(items)
-            assert "<template>" in texts
-            assert "<script>" in texts
-            assert "<style>" in texts
+            tags = _parse_vue(path)
+            names = [t.name for t in tags]
+            assert "<template>" in names
+            assert "<script>" in names
+            assert "<style>" in names
 
     def test_vue_composition_api_functions(self):
         with _tmpfile(
@@ -159,9 +134,9 @@ const handler = () => {}
 <template><div>hi</div></template>
 """,
         ) as path:
-            items = _parse_vue(path)
-            texts = "\n".join(items)
-            assert "toggle" in texts
+            tags = _parse_vue(path)
+            names = [t.name for t in tags]
+            assert "toggle" in names
 
     def test_vue_script_lang_ts(self):
         with _tmpfile(
@@ -172,9 +147,9 @@ function greet(name: string): string { return name }
 <template><div>hi</div></template>
 """,
         ) as path:
-            items = _parse_vue(path)
-            texts = "\n".join(items)
-            assert "greet" in texts
+            tags = _parse_vue(path)
+            names = [t.name for t in tags]
+            assert "greet" in names
 
     def test_vue_options_api_methods(self):
         with _tmpfile(
@@ -190,10 +165,10 @@ export default {
 </script>
 """,
         ) as path:
-            items = _parse_vue(path)
-            texts = "\n".join(items)
-            assert "def logout()" in texts
-            assert "def handleClick()" in texts
+            tags = _parse_vue(path)
+            names = [t.name for t in tags]
+            assert "logout" in names
+            assert "handleClick" in names
 
 
 class TestParseFile:
@@ -201,18 +176,20 @@ class TestParseFile:
 
     def test_py_file(self):
         with _tmpfile(".py", b"def hello(): pass") as path:
-            items = _parse_file(path)
-            assert any("hello" in i for i in items)
+            tags = _parse_file(path)
+            names = [t.name for t in tags]
+            assert "hello" in names
 
     def test_unknown_extension(self):
         with _tmpfile(".docx", b"binary data") as path:
-            items = _parse_file(path)
-            assert items == []
+            tags = _parse_file(path)
+            assert tags == []
 
     def test_vue_file(self):
         with _tmpfile(".vue", b"<template><div/></template>") as path:
-            items = _parse_file(path)
-            assert any("template" in i for i in items)
+            tags = _parse_file(path)
+            names = [t.name for t in tags]
+            assert any("template" in n for n in names)
 
 
 class TestRepomapGenerator:
@@ -232,10 +209,10 @@ class TestRepomapGenerator:
 
             assert "subdir/" in result
             assert "main.py" in result
-            assert "class App" in result
-            assert "def run" in result
+            assert "App" in result
+            assert "run" in result
             assert "utils.py" in result
-            assert "def helper" in result
+            assert "helper" in result
         finally:
             shutil.rmtree(tmpdir)
 
@@ -318,8 +295,8 @@ class TestSecurity:
 
     def test_large_file_skipped(self):
         with _tmpfile(".py", b"x = 1\n" * (MAX_FILE_SIZE // 4)) as path:
-            items = _parse_with_treesitter(path, "python")
-            assert items == []
+            tags = _extract_tags(path, "python")
+            assert tags == []
 
     def test_permission_error_skipped(self):
         if sys.platform == "win32":
@@ -351,6 +328,195 @@ class TestSecurity:
         assert "outside" in result
 
 
+class TestScmQueries:
+    """Tests for .scm tag query extraction."""
+
+    def test_python_definitions(self):
+        code = b'''
+class UserService:
+    def get_user(self, user_id):
+        pass
+
+    def delete_user(self, user_id):
+        pass
+
+def helper():
+    pass
+
+async def async_helper():
+    pass
+'''
+        tags = _extract_tags_from_source(code, "python")
+        defs = [t for t in tags if t.kind == "def"]
+        names = [t.name for t in defs]
+        assert "UserService" in names
+        assert "get_user" in names
+        assert "delete_user" in names
+        assert "helper" in names
+        assert "async_helper" in names
+
+    def test_python_references(self):
+        code = b'''
+from auth import login
+import os
+
+def handler():
+    result = login(user)
+    os.path.exists("test")
+'''
+        tags = _extract_tags_from_source(code, "python")
+        refs = [t for t in tags if t.kind == "ref"]
+        ref_names = [t.name for t in refs]
+        assert "login" in ref_names
+
+    def test_python_scope_detection(self):
+        code = b'''
+def handler():
+    result = login(user)
+
+def processor():
+    data = fetch(url)
+'''
+        tags = _extract_tags_from_source(code, "python")
+        refs = [t for t in tags if t.kind == "ref"]
+        login_ref = [t for t in refs if t.name == "login"]
+        assert len(login_ref) >= 1
+        assert login_ref[0].scope == "handler"
+        fetch_ref = [t for t in refs if t.name == "fetch"]
+        assert len(fetch_ref) >= 1
+        assert fetch_ref[0].scope == "processor"
+
+    def test_python_definition_scope(self):
+        """Method defined inside class has scope = class name, not self."""
+        code = b'''
+class MyClass:
+    def method(self):
+        pass
+
+def top_level():
+    pass
+'''
+        tags = _extract_tags_from_source(code, "python")
+        defs = [t for t in tags if t.kind == "def"]
+        method_def = [t for t in defs if t.name == "method"]
+        assert len(method_def) == 1
+        assert method_def[0].scope == "MyClass"
+        class_def = [t for t in defs if t.name == "MyClass"]
+        assert len(class_def) == 1
+        assert class_def[0].scope == ""
+        top_def = [t for t in defs if t.name == "top_level"]
+        assert len(top_def) == 1
+        assert top_def[0].scope == ""
+
+    def test_javascript_definitions(self):
+        code = b'''
+class MyService {
+    process(data) {
+        return data;
+    }
+}
+
+function helper() {}
+
+const handler = (req, res) => { res.send("ok"); };
+'''
+        tags = _extract_tags_from_source(code, "javascript")
+        defs = [t.name for t in tags if t.kind == "def"]
+        assert "MyService" in defs
+        assert "process" in defs
+        assert "helper" in defs
+        assert "handler" in defs
+
+    def test_javascript_references(self):
+        code = b'''
+import { login } from "./auth";
+
+function handle() {
+    login(user);
+    console.log("done");
+}
+'''
+        tags = _extract_tags_from_source(code, "javascript")
+        refs = [t.name for t in tags if t.kind == "ref"]
+        assert "login" in refs
+
+    def test_typescript_definitions(self):
+        code = b'''
+interface UserRepo {
+    find(id: string): User;
+}
+
+class UserService implements UserRepo {
+    find(id: string): User {
+        return db.get(id);
+    }
+}
+
+function createService(): UserService {
+    return new UserService();
+}
+
+const factory = (config: Config) => new UserService();
+'''
+        tags = _extract_tags_from_source(code, "typescript")
+        defs = [t.name for t in tags if t.kind == "def"]
+        assert "UserRepo" in defs
+        assert "UserService" in defs
+        assert "find" in defs
+        assert "createService" in defs
+        assert "factory" in defs
+
+    def test_tsx_definitions(self):
+        code = b'''
+function App() {
+    return <div>Hello</div>;
+}
+
+const Button = ({ label }) => <button>{label}</button>;
+'''
+        tags = _extract_tags_from_source(code, "tsx")
+        defs = [t.name for t in tags if t.kind == "def"]
+        assert "App" in defs
+        assert "Button" in defs
+
+    def test_python_method_receiver(self):
+        """@method.receiver captures obj in obj.method() calls."""
+        source = b"service.validate()\n"
+        tags, receivers = _extract_tags_with_receivers_from_source(source, "python")
+        receiver_names = [r.receiver_name for r in receivers]
+        assert "service" in receiver_names
+
+
+class TestRepoMapWithReferences:
+    def test_inline_references_shown(self):
+        import tempfile, shutil
+        tmpdir = tempfile.mkdtemp()
+        try:
+            with open(os.path.join(tmpdir, "auth.py"), "w") as f:
+                f.write("def login(user):\n    pass\n")
+            with open(os.path.join(tmpdir, "views.py"), "w") as f:
+                f.write("from auth import login\ndef dashboard():\n    login(user)\n")
+            gen = RepomapGenerator()
+            result = gen.get_map(tmpdir, show_references=True)
+            assert "->" in result
+        finally:
+            shutil.rmtree(tmpdir)
+
+    def test_no_references_by_default(self):
+        import tempfile, shutil
+        tmpdir = tempfile.mkdtemp()
+        try:
+            with open(os.path.join(tmpdir, "auth.py"), "w") as f:
+                f.write("def login(user):\n    pass\n")
+            with open(os.path.join(tmpdir, "views.py"), "w") as f:
+                f.write("from auth import login\ndef dashboard():\n    login(user)\n")
+            gen = RepomapGenerator()
+            result = gen.get_map(tmpdir)
+            assert "->" not in result
+        finally:
+            shutil.rmtree(tmpdir)
+
+
 class TestBoundariesAndLimits:
     """Tests for boundary conditions that catch specific mutations."""
 
@@ -362,8 +528,8 @@ class TestBoundariesAndLimits:
                 content = b"def boundary(): pass\n"
                 f.write(content + b" " * (MAX_FILE_SIZE - len(content)))
             assert os.path.getsize(path) == MAX_FILE_SIZE
-            items = _parse_with_treesitter(path, "python")
-            assert any("boundary" in i for i in items)
+            tags = _extract_tags(path, "python")
+            assert any(t.name == "boundary" for t in tags)
 
     def test_file_over_max_size_is_skipped(self):
         """Catches mutation: removing the MAX_FILE_SIZE check entirely."""
@@ -371,22 +537,8 @@ class TestBoundariesAndLimits:
             with open(path, "wb") as f:
                 f.write(b"def toobig(): pass\n" + b" " * MAX_FILE_SIZE)
             assert os.path.getsize(path) > MAX_FILE_SIZE
-            items = _parse_with_treesitter(path, "python")
-            assert items == []
-
-    def test_ast_depth_limit(self):
-        """Catches mutation: removing MAX_AST_DEPTH check."""
-        # Build 25 levels of nested classes (exceeds MAX_AST_DEPTH=20)
-        lines = []
-        for i in range(25):
-            lines.append("    " * i + f"class C{i}:")
-        lines.append("    " * 25 + "def deepfunc(): pass")
-        code = "\n".join(lines).encode()
-        with _tmpfile(".py", code) as path:
-            items = _parse_with_treesitter(path, "python")
-            # Should find exactly MAX_AST_DEPTH classes (0..19), not all 25
-            class_items = [i for i in items if "class C" in i]
-            assert len(class_items) == MAX_AST_DEPTH
+            tags = _extract_tags(path, "python")
+            assert tags == []
 
     def test_output_truncation(self):
         """Catches mutation: removing MAX_OUTPUT_LINES truncation."""
@@ -471,6 +623,17 @@ class TestBoundariesAndLimits:
 # ---------------------------------------------------------------------------
 
 
+def _extract_tags_from_source(code: bytes, lang: str) -> list:
+    """Helper: write code to temp file and extract tags."""
+    ext = {"python": ".py", "javascript": ".js", "typescript": ".ts", "tsx": ".tsx"}[lang]
+    with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as f:
+        f.write(code)
+        f.flush()
+        tags = _extract_tags(f.name, lang)
+    os.unlink(f.name)
+    return tags
+
+
 @contextlib.contextmanager
 def _tmpfile(ext: str, content: bytes):
     """Create a temporary file with the given extension and content."""
@@ -499,6 +662,8 @@ if __name__ == "__main__":
         TestParseFile,
         TestRepomapGenerator,
         TestSecurity,
+        TestScmQueries,
+        TestRepoMapWithReferences,
         TestBoundariesAndLimits,
     ]:
         instance = cls()

@@ -6,7 +6,8 @@
 
 - **Обратный инжиниринг** — сканирует проект, анализирует структуру и генерирует SRS-документацию
 - **Прямой инжиниринг** — читает спецификацию и автономно пишет/модифицирует код
-- **Repomap** — генерирует карту репозитория (дерево файлов + сигнатуры классов/функций) через tree-sitter. Поддержка Python, JavaScript, TypeScript, Vue
+- **Repomap** — генерирует карту репозитория (дерево файлов + сигнатуры классов/функций) через tree-sitter `.scm` запросы. Поддержка Python, JavaScript, TypeScript, Vue
+- **Symbol Graph** — граф зависимостей на уровне символов с 7 уровнями приоритета (self-access, same-file, import-resolved, type-resolved, scope-match, global-unique, unique-method). Резолвинг импортов, вывод типов, JSON-кеширование
 - **Защита от зацикливания** — детекция повторяющихся мыслей агента и принудительная проверка завершения
 
 ## Архитектура
@@ -23,7 +24,8 @@ think → state_check → code_action → think (цикл до достижен�
 | Модуль | Описание |
 |--------|----------|
 | `src/lg_agent.py` | Ядро агента: граф, состояние (`AgentState`), узлы `think`, `code_action`, `state_check`, `review` |
-| `src/repomap.py` | Генератор карты репозитория (tree-sitter AST: классы, функции, методы, Vue SFC секции) |
+| `src/repo_map.py` | Генератор карты репозитория (tree-sitter `.scm` запросы: классы, функции, методы, Vue SFC секции) |
+| `src/graph/` | Пакет символьного графа: модели, резолвинг импортов, вывод типов, RepoGraphLite, JSON-кеш |
 | `src/lg_tools.py` | Инструменты агента (shell_exec) |
 | `src/gener.py` | Интерфейс к LLM (OpenAI-совместимый API) |
 | `src/makesrs_prod.py` | Движок генерации SRS из исходного кода |
@@ -74,7 +76,7 @@ run_agent('создать файл hello.txt', 'простой тест', prjdir
 "
 
 # Посмотреть карту репозитория
-just repomap ./my-project
+just repo-map ./my-project
 ```
 
 ## Тестирование
@@ -90,7 +92,7 @@ just test-integration
 just test
 ```
 
-Юнит-тесты (29 штук) покрывают: парсинг Python/JS/TS/Vue, генерацию дерева, безопасность (path traversal, symlinks, file size limits, depth limits, output truncation).
+Юнит-тесты (~79 штук) покрывают: парсинг Python/JS/TS/Vue, `.scm` запросы, символьный граф (7 приоритетов), резолвинг импортов, вывод типов, JSON-кеш, генерацию дерева, безопасность (path traversal, symlinks, file size limits, depth limits, output truncation).
 
 Интеграционные тесты:
 
@@ -106,7 +108,21 @@ just test
 webai-tool/
 ├── src/
 │   ├── lg_agent.py          # Ядро агента (LangGraph)
-│   ├── repomap.py           # Генератор карты репозитория
+│   ├── repo_map.py          # Генератор карты репозитория (.scm запросы)
+│   ├── graph/               # Символьный граф зависимостей
+│   │   ├── models.py        # Dataclass-модели (SymbolNode, Edge, ImportTag, ...)
+│   │   ├── import_resolver.py # Резолвинг импортов через .scm запросы
+│   │   ├── type_resolver.py # Вывод типов (4 AST-паттерна)
+│   │   ├── repo_graph.py    # RepoGraphLite + @tool get_symbol_context/graph
+│   │   └── graph_store.py   # JSON-кеш в .repo-graph/
+│   ├── queries/             # Tree-sitter .scm файлы запросов
+│   │   ├── python-tags.scm
+│   │   ├── javascript-tags.scm
+│   │   ├── typescript-tags.scm
+│   │   ├── tsx-tags.scm
+│   │   ├── python-imports.scm
+│   │   ├── javascript-imports.scm
+│   │   └── typescript-imports.scm
 │   ├── lg_tools.py          # Инструменты (shell_exec)
 │   ├── gener.py             # LLM-интерфейс
 │   ├── makesrs_prod.py      # Генератор SRS
@@ -114,7 +130,12 @@ webai-tool/
 │   └── main.py              # Точка входа
 ├── tests/
 │   ├── unit/                # Юнит-тесты
-│   │   └── test_repomap.py
+│   │   ├── test_repo_map.py
+│   │   ├── test_models.py
+│   │   ├── test_import_resolver.py
+│   │   ├── test_type_resolver.py
+│   │   ├── test_repo_graph_lite.py
+│   │   └── test_graph_store.py
 │   ├── integration/         # Интеграционные тесты
 │   │   ├── test_hello_world.py
 │   │   ├── test_add_feature.py
@@ -124,6 +145,7 @@ webai-tool/
 │   ├── overview.md          # Документация архитектуры
 │   ├── loop-detection.md    # Детекция зацикливания
 │   └── repomap-roadmap.md   # Роадмап развития repomap
+├── scripts/                 # Скрипты для justfile рецептов
 ├── justfile                 # Команды разработки (кроссплатформенный)
 ├── .env.example             # Шаблон конфигурации
 └── pyproject.toml           # Зависимости проекта

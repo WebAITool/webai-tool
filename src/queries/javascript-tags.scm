@@ -1,0 +1,37 @@
+;; --- Definitions ---
+
+(class_declaration
+  name: (identifier) @name.definition.class)
+
+(function_declaration
+  name: (identifier) @name.definition.function)
+
+(method_definition
+  name: (property_identifier) @name.definition.function)
+
+;; Arrow functions assigned to const/let/var
+(lexical_declaration
+  (variable_declarator
+    name: (identifier) @name.definition.function
+    value: (arrow_function)))
+
+;; --- References ---
+
+(call_expression
+  function: (identifier) @name.reference.call)
+
+(call_expression
+  function: (member_expression
+    object: (identifier) @method.receiver
+    property: (property_identifier) @name.reference.call))
+
+(import_statement
+  (import_clause
+    (named_imports
+      (import_specifier
+        name: (identifier) @name.reference.import))))
+
+;; Default import: import Foo from "bar"
+(import_statement
+  (import_clause
+    (identifier) @name.reference.import))

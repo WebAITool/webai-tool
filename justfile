@@ -9,12 +9,24 @@ set windows-shell := ["pwsh", "-NoProfile", "-Command"]
 default:
     @just --list --list-submodules
 
+# show usage examples
+[group: 'help']
+[unix]
+help:
+    @sh scripts/help.sh
+
+# show usage examples
+[group: 'help']
+[windows]
+help:
+    @cmd /c scripts\help.bat
+
 # ─── setup ────────────────────────────────────────────────────────────
 
 # install all project dependencies
 [group: 'setup']
 install:
-    uv sync
+    @uv sync
 
 # copy .env.example → .env (won't overwrite existing)
 [group: 'setup']
@@ -22,10 +34,11 @@ install:
 env:
     @if [ ! -f .env ]; then cp .env.example .env && echo "created .env from .env.example"; else echo ".env already exists"; fi
 
+# copy .env.example → .env (won't overwrite existing)
 [group: 'setup']
 [windows]
 env:
-    if (-not (Test-Path .env)) { Copy-Item .env.example .env; Write-Host "created .env from .env.example" } else { Write-Host ".env already exists" }
+    @if (-not (Test-Path .env)) { Copy-Item .env.example .env; Write-Host "created .env from .env.example" } else { Write-Host ".env already exists" }
 
 # full first-time setup
 [group: 'setup']
@@ -33,10 +46,10 @@ setup: env install
 
 # ─── test ─────────────────────────────────────────────────────────────
 
-# run unit tests (repomap, parsers, security)
+# run unit tests (repo-map, parsers, security)
 [group: 'test']
 test-unit:
-    uv run python tests/unit/test_repomap.py
+    uv run python -m pytest tests/unit/ -v
 
 # run integration tests (requires LLM API key in .env)
 [group: 'test']
@@ -51,48 +64,45 @@ test: test-unit
 
 # ─── run ──────────────────────────────────────────────────────────────
 
-# run the agent with a goal and spec
-# usage: just run "build a landing page" "use vue 3, tailwind"
+# run the agent
 [group: 'run']
-[unix]
 run goal spec prjdir=".":
-    AGENT_GOAL="{{goal}}" AGENT_SPEC="{{spec}}" AGENT_PRJDIR="{{prjdir}}" uv run python -c "import sys, os; sys.path.insert(0,'src'); from lg_agent import run_agent; run_agent(os.environ['AGENT_GOAL'], os.environ['AGENT_SPEC'], prjdir=os.environ['AGENT_PRJDIR'])"
+    @uv run python scripts/run-agent.py "{{goal}}" "{{spec}}" "{{prjdir}}"
 
+# generate repo-map for a directory
 [group: 'run']
-[windows]
-run goal spec prjdir=".":
-    $env:AGENT_GOAL="{{goal}}"; $env:AGENT_SPEC="{{spec}}"; $env:AGENT_PRJDIR="{{prjdir}}"; uv run python -c "import sys, os; sys.path.insert(0,'src'); from lg_agent import run_agent; run_agent(os.environ['AGENT_GOAL'], os.environ['AGENT_SPEC'], prjdir=os.environ['AGENT_PRJDIR'])"
+repo-map dir=".":
+    @uv run python scripts/repo-map.py "{{dir}}"
 
-# generate repomap for a directory (defaults to current dir)
+# alias for repo-map
+alias tree := repo-map
+
+# show cross-file reference graph
 [group: 'run']
-[unix]
-repomap dir=".":
-    REPOMAP_DIR="{{dir}}" uv run python -c "import sys, os; sys.path.insert(0,'src'); from repomap import get_repo_structure; print(get_repo_structure.invoke({'root_path': os.environ['REPOMAP_DIR']}))"
+repo-graph dir=".":
+    @uv run python scripts/repo-graph.py "{{dir}}"
 
+# what does a symbol call?
 [group: 'run']
-[windows]
-repomap dir=".":
-    $env:REPOMAP_DIR="{{dir}}"; uv run python -c "import sys, os; sys.path.insert(0,'src'); from repomap import get_repo_structure; print(get_repo_structure.invoke({'root_path': os.environ['REPOMAP_DIR']}))"
-
-# alias for repomap
-alias tree := repomap
+symbol-graph name depth="1" dir=".":
+    @uv run python scripts/symbol-graph.py "{{name}}" "{{depth}}" "{{dir}}"
 
 # ─── lint ─────────────────────────────────────────────────────────────
 
-# check code style with ruff (does not modify files)
+# check code style with ruff
 [group: 'lint']
 lint:
-    uvx ruff check src/ tests/
+    uv run ruff check src/ tests/
 
 # auto-fix lint issues
 [group: 'lint']
 lint-fix:
-    uvx ruff check --fix src/ tests/
+    uv run ruff check --fix src/ tests/
 
 # format code with ruff
 [group: 'lint']
 fmt:
-    uvx ruff format src/ tests/
+    uv run ruff format src/ tests/
 
 # ─── util ─────────────────────────────────────────────────────────────
 
@@ -100,11 +110,12 @@ fmt:
 [group: 'util']
 [unix]
 clean:
-    find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
-    find . -type f -name "*.pyc" -delete 2>/dev/null || true
+    @find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+    @find . -type f -name "*.pyc" -delete 2>/dev/null || true
 
+# remove python cache files
 [group: 'util']
 [windows]
 clean:
-    Get-ChildItem -Recurse -Directory -Filter __pycache__ | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-    Get-ChildItem -Recurse -File -Filter *.pyc | Remove-Item -Force -ErrorAction SilentlyContinue
+    @Get-ChildItem -Recurse -Directory -Filter __pycache__ | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+    @Get-ChildItem -Recurse -File -Filter *.pyc | Remove-Item -Force -ErrorAction SilentlyContinue

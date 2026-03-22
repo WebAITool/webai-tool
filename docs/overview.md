@@ -35,7 +35,7 @@ spec: str              # Project specification / context
 plan: str              # Current plan from think node
 actions: list[str]     # History of executed code + output
 thoughts: list[str]    # History of plans / reasoning
-tree: str              # Current repo map (from repomap.py)
+tree: str              # Current repo map (from repo_map.py)
 prev_tree: str         # Tree snapshot from previous iteration
 stale_count: int       # Consecutive iterations with unchanged tree
 review_count: int      # Consecutive failed reviews (capped at 3)
@@ -61,15 +61,21 @@ from lg_agent import run_agent
 run_agent(goal="...", spec="...", prjdir="./output", max_steps=30)
 ```
 
-### `src/repomap.py` — Repository Map Generator
+### `src/repo_map.py` — Repository Map Generator
 
-Generates a tree-like map of the project with code-level annotations (classes, functions, methods, Vue SFC sections) via tree-sitter AST parsing.
+Generates a tree-like map of the project with code-level annotations (classes, functions, methods, Vue SFC sections) via tree-sitter `.scm` query files stored in `src/queries/`. The core extraction function `_extract_tags` runs `.scm` queries and returns `Tag` dataclass instances (file, name, line, kind=def/ref).
 
 Supported languages: Python, JavaScript, TypeScript, Vue.
 
 Security: path traversal protection, symlink skipping, file size limits (512 KB), depth limits (30 dirs, 20 AST), output truncation (5000 lines).
 
-Exposed as a LangChain `@tool` (`get_repo_structure`) so the agent can call it during execution.
+Exposed as a LangChain `@tool` (`get_repo_structure`) so the agent can call it during execution. The `show_references` parameter enables cross-file reference annotations in the output.
+
+### `src/repo_graph.py` — Cross-File Reference Graph
+
+`RepoGraph` builds a directed graph from tags produced by `repo_map`: edges go from files that reference a symbol to files that define it. Weights are based on reference count and symbol specificity.
+
+Exposed as a LangChain `@tool` (`get_symbol_graph`) — accepts a symbol name and returns its definitions, references, and related symbols.
 
 ### `src/lg_tools.py` — Shell Tool
 
@@ -107,7 +113,8 @@ Orchestrates the full pipeline: generate SRS from source project → run agent t
 main.py
   ├── makesrs_prod.py → gener.py, prompts.py
   └── lg_agent.py
-        ├── repomap.py (get_repo_structure tool)
+        ├── repo_map.py (get_repo_structure tool)
+        ├── repo_graph.py (get_symbol_graph tool) → repo_map.py
         ├── lg_tools.py (shell_exec tool)
         └── gener.py (LLM calls via ChatOpenAI)
 ```
