@@ -228,14 +228,11 @@ def code_action(state: AgentState):
             except Exception as e:
                 tree_result = f"Tree-sitter error: {e}"
             
-            pyright_result = ""
-            backend_path = Path(state['prjdir']) / 'backend'
-            if backend_path.exists():
-                try:
-                    prepare_dev_env(Path(state['prjdir']))
-                    pyright_result = run_pyright()
-                except Exception as e:
-                    pyright_result = f"Pyright error: {e}"
+            try:
+                prepare_dev_env(Path(state['prjdir']))
+                pyright_result = run_pyright()
+            except Exception as e:
+                pyright_result = f"Pyright error: {e}"
             
             frontend_result = ""
             new_frontend_hash = ""
