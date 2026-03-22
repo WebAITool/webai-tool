@@ -1,4 +1,5 @@
 import os
+import logging
 import dotenv
 import hashlib
 from langchain_openai import ChatOpenAI
@@ -8,6 +9,8 @@ from langchain_core.prompts import (
     AIMessagePromptTemplate,
     ChatPromptTemplate
 )
+
+from dev_env import run_pyright 
 from makesrs_prod import make_tree
 from repomap import get_repo_structure
 from dev_env import run_pyright, prepare_dev_env
@@ -258,6 +261,7 @@ def code_action(state: AgentState):
                     frontend_result = f"UI verification error: {e}"
             
             action += f'\nACTION:\nexecuted code:\n{code}\nresult:\n{console_out}\nTree-sitter:\n{tree_result}\nPyright:\n{pyright_result}\nFrontend:\n{frontend_result}\n'
+            logging.debug(action)
             return {
                 'actions': state['actions'] + [action], 
                 'tree': repo_structure if 'repo_structure' in dir() else make_tree(state['prjdir']),
