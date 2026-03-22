@@ -11,6 +11,7 @@ from langchain_core.prompts import (
 from makesrs_prod import make_tree
 from repomap import get_repo_structure
 from dev_env import run_pyright, prepare_dev_env
+from frontend_check import check_frontend
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.messages import ToolMessage
 from langchain_core.output_parsers import StrOutputParser
@@ -196,6 +197,8 @@ def code_action(state: AgentState):
     sysmsg = SystemMessagePromptTemplate.from_template(
         'you are code agent of the agent system')
     usrmsg = HumanMessagePromptTemplate.from_template(
+        'Project directory: {prjdir}\n'
+        'All file paths must be absolute, starting with this directory.\n'
         'specification of project you are working on is:\n{spec}\nend of specification.'
         'goal of agentic system is\n{goal}\nend of the goal.'
         'list of your previous actions is\n{actions}\nend of the list.'
@@ -234,6 +237,8 @@ def code_action(state: AgentState):
             frontend_result = ""
             new_frontend_hash = ""
             frontend_path = Path(state['prjdir']) / 'frontend'
+            if not frontend_path.exists():
+                frontend_path = Path(state['prjdir']) / 'src'
             old_hash = state.get('frontend_hash', '')
             changed, new_frontend_hash = frontend_changed(state['prjdir'], old_hash)
             

@@ -407,6 +407,7 @@ _generator = RepomapGenerator()
 
 @tool
 def get_repo_structure(root_path: str | None = None) -> str:
+    """Get the repository structure as a formatted tree with file details."""
     if root_path is None:
         root_path = os.getcwd()
     cwd = os.path.normcase(os.path.realpath(os.getcwd()))

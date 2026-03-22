@@ -3,3 +3,6 @@ __pycache__/
 *$py.class
 .env
 venv/
+*.pyc
+test_*.py
+run_agent_test.py

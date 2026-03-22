@@ -2,9 +2,9 @@ import os
 import subprocess
 import time
 import base64
-import signal
+import re
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List
 import dotenv
 
 from openai import OpenAI
@@ -20,6 +20,59 @@ class FrontendChecker:
             api_key=self.api_key
         )
         self.dev_process = None
+
+    def discover_routes(self, frontend_path: Path) -> List[str]:
+        routes = ["/"]
+        
+        router_patterns = [
+            r'path:\s*["\']([^"\']+)["\']',
+            r'to:\s*["\']([^"\']+)["\']',
+            r'href:\s*["\']([^"\']+)["\']',
+        ]
+        
+        router_files = [
+            "router/index.js", "router/index.ts",
+            "src/router/index.js", "src/router/index.ts",
+            "src/router.js", "src/router.ts",
+        ]
+        
+        for router_file in router_files:
+            router_path = frontend_path / router_file
+            if router_path.exists():
+                content = router_path.read_text(encoding='utf-8')
+                for pattern in router_patterns:
+                    matches = re.findall(pattern, content)
+                    for match in matches:
+                        if match.startswith('/') and match not in routes:
+                            routes.append(match)
+        
+        return routes[:10]
+
+    def crawl_links(self, base_url: str, max_pages: int = 10) -> List[str]:
+        try:
+            from playwright.sync_api import sync_playwright
+            
+            routes = ["/"]
+            
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                page = browser.new_page()
+                
+                page.goto(base_url, wait_until="networkidle")
+                
+                links = page.query_selector_all("a[href]")
+                for link in links:
+                    href = link.get_attribute("href")
+                    if href and href.startswith('/') and href not in routes:
+                        routes.append(href)
+                        if len(routes) >= max_pages:
+                            break
+                
+                browser.close()
+            
+            return routes
+        except Exception:
+            return ["/"]
 
     def start_dev_server(self, frontend_path: Path, port: int = 5173) -> bool:
         if not frontend_path.exists():
@@ -96,26 +149,27 @@ class FrontendChecker:
     def analyze_ui(
         self,
         screenshot_path: str,
+        route: str = "/",
         goal: str = "",
-        spec: str = ""
+        spec: str = "",
+        max_tokens: int = 4000
     ) -> str:
         try:
             image_base64 = self.encode_image(screenshot_path)
 
-            prompt = f"""Analyze this frontend UI screenshot.
+            prompt = f"""Analyze this frontend UI screenshot for route '{route}'.
 
-Goal of the project: {goal if goal else "Build a web application"}
+Goal: {goal if goal else "Build a web application"}
+Spec: {spec if spec else "Not provided"}
 
-Specification: {spec if spec else "Not provided"}
+Analyze:
+1. Layout and positioning
+2. Visual design (colors, fonts, spacing)
+3. Usability and accessibility
+4. Completeness vs goal/spec
+5. Issues and improvements
 
-Please analyze:
-1. Layout: is the layout reasonable? Are elements properly positioned?
-2. Visual Design: are colors, fonts, and spacing appropriate?
-3. Usability: can users easily understand and interact with the interface?
-4. Completeness: does the UI match the goal and specification?
-5. Issues: what problems or improvements do you see?
-
-Provide specific, actionable feedback that a developer can use to improve the UI."""
+Provide actionable feedback."""
 
             response = self.client.chat.completions.create(
                 model="qwen/qwen3-vl-8b-thinking",
@@ -133,19 +187,21 @@ Provide specific, actionable feedback that a developer can use to improve the UI
                         ]
                     }
                 ],
-                max_tokens=2000
+                max_tokens=max_tokens
             )
 
             return response.choices[0].message.content
         except Exception as e:
-            return f"UI analysis failed: {e}"
+            return f"Analysis failed: {e}"
 
     def verify_frontend(
         self,
         frontend_path: Path,
         goal: str = "",
         spec: str = "",
-        port: int = 5173
+        port: int = 5173,
+        max_pages: int = 10,
+        max_tokens: int = 4000
     ) -> Tuple[bool, str]:
         results = []
 
@@ -156,20 +212,35 @@ Provide specific, actionable feedback that a developer can use to improve the UI
             return False, "Failed to start dev server"
 
         try:
-            screenshot_path = self.take_screenshot(
-                url=f"http://localhost:{port}",
-                output_path=str(frontend_path / "screenshot.png")
-            )
+            base_url = f"http://localhost:{port}"
+            
+            routes = self.discover_routes(frontend_path)
+            routes = self.crawl_links(base_url, max_pages)
+            routes = list(dict.fromkeys(routes))[:max_pages]
+            
+            print(f"Found {len(routes)} routes: {routes}")
+            
+            all_success = True
+            
+            for route in routes:
+                url = base_url + route
+                safe_route = route.replace("/", "_").strip("_") or "home"
+                screenshot_path = str(frontend_path / f"screenshot_{safe_route}.png")
+                
+                screenshot = self.take_screenshot(url=url, output_path=screenshot_path)
+                
+                if not screenshot:
+                    results.append(f"[{route}] Screenshot failed")
+                    all_success = False
+                    continue
+                
+                analysis = self.analyze_ui(screenshot, route, goal, spec, max_tokens)
+                results.append(f"[{route}]\n{analysis}\n")
+                
+                if "error" in analysis.lower() or "fail" in analysis.lower():
+                    all_success = False
 
-            if not screenshot_path:
-                return False, "Failed to take screenshot"
-
-            analysis = self.analyze_ui(screenshot_path, goal, spec)
-            results.append(f"[UI ANALYSIS]\n{analysis}")
-
-            success = "error" not in analysis.lower() and "fail" not in analysis.lower()
-
-            return success, "\n".join(results)
+            return all_success, "\n".join(results)
 
         finally:
             self.stop_dev_server()
@@ -180,10 +251,19 @@ def check_frontend(
     goal: str = "",
     spec: str = ""
 ) -> Tuple[bool, str]:
-    frontend_path = Path(prjdir) / "frontend"
-
-    if not frontend_path.exists():
-        return True, "No frontend directory found, skipping frontend check"
+    prjdir_path = Path(prjdir)
+    
+    # Find project root (where package.json is)
+    project_root = prjdir_path
+    if not (project_root / "package.json").exists():
+        # Check if it's in a subdirectory structure
+        for parent in prjdir_path.parents:
+            if (parent / "package.json").exists():
+                project_root = parent
+                break
+    
+    if not (project_root / "package.json").exists():
+        return True, "No package.json found"
 
     checker = FrontendChecker()
-    return checker.verify_frontend(frontend_path, goal, spec)
+    return checker.verify_frontend(project_root, goal, spec)
