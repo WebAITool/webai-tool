@@ -4,8 +4,6 @@ from __future__ import annotations
 import os
 from collections import defaultdict
 
-from langchain_core.tools import tool
-
 from graph.models import SymbolNode, Edge, ImportTag, TypeBinding, ReceiverTag
 from repo_map import Tag
 
@@ -292,95 +290,3 @@ class RepoGraphLite:
             unique = sorted(set(names))
             lines.append(f"  {rel(src_f)} -> {rel(tgt_f)} via: {', '.join(unique)}")
         return "\n".join(lines)
-
-
-def build(root_path: str) -> "RepoGraphLite":
-    """Build a RepoGraphLite from all source files under root_path."""
-    from graph.graph_store import GraphStore
-    from repo_map import IGNORED_DIRS, _EXT_TO_LANG
-    from repo_map import _extract_tags_and_receivers
-    from graph.import_resolver import extract_imports
-    from graph.type_resolver import extract_type_bindings
-
-    store = GraphStore(root_path)
-    current_files = _scan_mtimes(root_path)
-
-    if not store.is_stale(current_files):
-        cached = store.load()
-        if cached is not None:
-            return cached
-
-    all_tags: list[Tag] = []
-    all_imports: list[ImportTag] = []
-    all_bindings: list[TypeBinding] = []
-    all_receivers: list[ReceiverTag] = []
-
-    for dirpath, dirnames, filenames in os.walk(root_path):
-        dirnames[:] = [d for d in dirnames if d not in IGNORED_DIRS]
-        for fname in filenames:
-            filepath = os.path.join(dirpath, fname)
-            ext = os.path.splitext(fname)[1].lower()
-            lang = _EXT_TO_LANG.get(ext)
-            if lang is None:
-                continue
-            tags, receivers = _extract_tags_and_receivers(filepath, lang)
-            all_tags.extend(tags)
-            all_receivers.extend(receivers)
-            all_imports.extend(extract_imports(filepath, lang))
-            all_bindings.extend(extract_type_bindings(filepath, lang))
-
-    graph = RepoGraphLite()
-    graph.build_from(all_tags, all_imports, all_bindings, all_receivers)
-
-    store.save(graph, current_files)
-    return graph
-
-
-def _scan_mtimes(root_path: str) -> dict[str, float]:
-    from repo_map import IGNORED_DIRS
-    mtimes = {}
-    for dirpath, dirnames, filenames in os.walk(root_path):
-        dirnames[:] = [d for d in dirnames if d not in IGNORED_DIRS]
-        for fname in filenames:
-            fp = os.path.join(dirpath, fname)
-            try:
-                mtimes[fp] = os.path.getmtime(fp)
-            except OSError:
-                pass
-    return mtimes
-
-
-@tool
-def get_symbol_context(
-    name: str,
-    file_path: str | None = None,
-    root_path: str | None = None,
-) -> str:
-    """Show full context for a symbol: where defined, who calls it, what it calls.
-
-    Args:
-        name: Symbol name (e.g. "login", "UserService")
-        file_path: Disambiguate if multiple symbols share the name
-        root_path: Project root directory (defaults to current directory)
-    """
-    root = root_path or os.getcwd()
-    graph = build(root)
-    return graph.symbol_context(name, file_path)
-
-
-@tool
-def get_symbol_graph(
-    symbol: str,
-    depth: int = 1,
-    root_path: str | None = None,
-) -> str:
-    """Show the dependency graph for a symbol — what it calls, with configurable depth.
-
-    Args:
-        symbol: Symbol name to look up
-        depth: BFS depth (default 1)
-        root_path: Project root directory (defaults to current directory)
-    """
-    root = root_path or os.getcwd()
-    graph = build(root)
-    return graph.symbol_graph(symbol, depth)

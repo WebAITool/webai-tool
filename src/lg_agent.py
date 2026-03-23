@@ -8,7 +8,7 @@ from langchain_core.prompts import (
     ChatPromptTemplate
 )
 from repo_map import get_repo_structure
-from graph.repo_graph import get_symbol_context, get_symbol_graph  # noqa: F401
+from tools.context import get_symbol_context, get_symbol_graph  # noqa: F401
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.messages import ToolMessage
 from langchain_core.output_parsers import StrOutputParser

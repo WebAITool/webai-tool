@@ -363,7 +363,7 @@ class RepomapGenerator:
         self._walk(root_path, lines, all_tags)
 
         if show_references and all_tags:
-            from graph.repo_graph import build as _build_graph
+            from graph.builder import build as _build_graph
             graph = _build_graph(root_path)
             section = graph.format_file_edges(root_path)
             if section:
