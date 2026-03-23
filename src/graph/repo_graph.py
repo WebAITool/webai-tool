@@ -252,6 +252,74 @@ class RepoGraphLite:
 
         return "\n".join(lines)
 
+    def impact(self, name: str, direction: str = "upstream",
+               max_depth: int = 3, min_confidence: float = 0.7,
+               file: str | None = None) -> str:
+        """BFS blast radius analysis for a symbol."""
+        candidates = self.by_name.get(name, [])
+        if not candidates:
+            return f"Symbol '{name}' not found in definitions."
+
+        if file:
+            candidates = [nid for nid in candidates if file in self.nodes[nid].file]
+        if not candidates:
+            return f"Symbol '{name}' not found in file '{file}'."
+
+        node = self.nodes[candidates[0]]
+        edge_index = self.incoming if direction == "upstream" else self.outgoing
+        dir_label = "UPSTREAM (what depends on this)" if direction == "upstream" \
+            else "DOWNSTREAM (what this depends on)"
+
+        depth_labels = {1: "WILL BREAK", 2: "LIKELY AFFECTED"}
+
+        visited: set[str] = {node.id}
+        frontier: list[tuple[str, int]] = [(node.id, 0)]
+        by_depth: dict[int, list[str]] = {}
+
+        while frontier:
+            cur_id, cur_depth = frontier.pop(0)
+            if cur_depth >= max_depth:
+                continue
+            for e in edge_index.get(cur_id, []):
+                peer_id = e.source_id if direction == "upstream" else e.target_id
+                if peer_id in visited or e.confidence < min_confidence:
+                    continue
+                visited.add(peer_id)
+                peer = self.nodes.get(peer_id)
+                if peer:
+                    d = cur_depth + 1
+                    label = depth_labels.get(d, "MAY NEED TESTING")
+                    line = f"    {peer.name} ({peer.file}:{peer.line}) [{e.kind} {e.confidence:.2f}]"
+                    by_depth.setdefault(d, []).append((label, line))
+                    frontier.append((peer_id, d))
+
+        lines = [f"TARGET: {node.kind} {node.name} ({node.file}:{node.line})", ""]
+        if not by_depth:
+            lines.append(f"{dir_label}:\n  (none)")
+        else:
+            lines.append(f"{dir_label}:")
+            for d in sorted(by_depth):
+                label = by_depth[d][0][0]
+                lines.append(f"  Depth {d} — {label}:")
+                for _, entry in by_depth[d]:
+                    lines.append(entry)
+
+        depth1_count = len(by_depth.get(1, []))
+        deeper_files = len({self.nodes[vid].file for vid in visited
+                           if vid != node.id and vid in self.nodes} - {node.file})
+        lines.append("")
+        lines.append(f"Summary: {depth1_count} direct callers, {deeper_files} files at depth 2+")
+
+        if depth1_count > 5:
+            risk = "HIGH"
+        elif depth1_count >= 2:
+            risk = "MEDIUM"
+        else:
+            risk = "LOW"
+        lines.append(f"Risk: {risk}")
+
+        return "\n".join(lines)
+
     def _node_file(self, node_id: str) -> str | None:
         """Return the file for a node_id, handling both real nodes and 'File:...' fallbacks."""
         node = self.nodes.get(node_id)
