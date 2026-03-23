@@ -9,7 +9,6 @@ def _make_graph(tags: list[Tag],
                 bindings: list[TypeBinding] | None = None,
                 receivers: list[ReceiverTag] | None = None) -> RepoGraphLite:
     g = RepoGraphLite()
-    g._init_indexes()
     g.build_from(tags, imports or [], bindings or [], receivers or [])
     return g
 

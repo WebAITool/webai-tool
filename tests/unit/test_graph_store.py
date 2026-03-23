@@ -7,7 +7,6 @@ from repo_map import Tag
 
 def _make_simple_graph() -> RepoGraphLite:
     g = RepoGraphLite()
-    g._init_indexes()
     g.build_from(
         [Tag(file="auth.py", name="login", line=1, kind="def",
              capture_name="name.definition.function")],

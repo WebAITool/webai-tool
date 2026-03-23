@@ -38,7 +38,6 @@ class GraphStore:
         from graph.repo_graph import RepoGraphLite
 
         g = RepoGraphLite()
-        g._init_indexes()
 
         for d in nodes_data:
             n = SymbolNode(**d)

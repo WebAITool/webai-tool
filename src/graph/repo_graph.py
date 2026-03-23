@@ -43,7 +43,7 @@ def _edge_kind(capture_name: str) -> str:
 class RepoGraphLite:
     """Symbol-level directed code graph."""
 
-    def _init_indexes(self) -> None:
+    def __init__(self) -> None:
         self.nodes: dict[str, SymbolNode] = {}
         self.edges: list[Edge] = []
         self.incoming: dict[str, list[Edge]] = defaultdict(list)
@@ -330,7 +330,6 @@ def build(root_path: str) -> "RepoGraphLite":
             all_bindings.extend(extract_type_bindings(filepath, lang))
 
     graph = RepoGraphLite()
-    graph._init_indexes()
     graph.build_from(all_tags, all_imports, all_bindings, all_receivers)
 
     store.save(graph, current_files)
