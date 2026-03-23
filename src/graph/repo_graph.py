@@ -320,6 +320,42 @@ class RepoGraphLite:
 
         return "\n".join(lines)
 
+    def search(self, query: str, kind: str | None = None,
+               limit: int = 10) -> str:
+        """Keyword search over symbols. Returns ranked results."""
+        tokens = query.lower().split()
+        if not tokens:
+            return f'Results for "{query}" (0 found):'
+
+        scored: list[tuple[int, str, int, str]] = []  # (score, file, line, node_id)
+        for node_id, node in self.nodes.items():
+            if kind and node.kind != kind:
+                continue
+            score = 0
+            name_lower = node.name.lower()
+            for tok in tokens:
+                if tok == name_lower:
+                    score += 10
+                elif tok in name_lower:
+                    score += 3
+                if tok in node.file.lower():
+                    score += 1
+                if tok in node.scope.lower():
+                    score += 1
+            if score > 0:
+                scored.append((-score, node.file, node.line, node_id))
+
+        scored.sort()
+        top = scored[:limit]
+
+        lines = [f'Results for "{query}": {len(scored)} found']
+        for neg_score, _, _, nid in top:
+            n = self.nodes[nid]
+            display = f"{n.name}@{n.scope}" if n.kind == "Method" and n.scope else n.name
+            lines.append(f"  {n.kind} {display} ({n.file}:{n.line}) — score {-neg_score}")
+
+        return "\n".join(lines)
+
     def _node_file(self, node_id: str) -> str | None:
         """Return the file for a node_id, handling both real nodes and 'File:...' fallbacks."""
         node = self.nodes.get(node_id)
