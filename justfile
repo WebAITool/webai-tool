@@ -67,25 +67,40 @@ test: test-unit
 # run the agent
 [group: 'run']
 run goal spec prjdir=".":
-    @uv run python scripts/run-agent.py "{{goal}}" "{{spec}}" "{{prjdir}}"
+    @uv run python scripts/run_agent.py "{{goal}}" "{{spec}}" "{{prjdir}}"
 
-# generate repo-map for a directory
+# show file tree with code annotations
 [group: 'run']
-repo-map dir=".":
-    @uv run python scripts/repo-map.py "{{dir}}"
+show-map dir=".":
+    @uv run python scripts/show_map.py "{{dir}}"
 
-# alias for repo-map
-alias tree := repo-map
+# alias for show-map
+alias tree := show-map
 
-# show cross-file reference graph
+# show cross-file reference edges
 [group: 'run']
-repo-graph dir=".":
-    @uv run python scripts/repo-graph.py "{{dir}}"
+show-edges dir=".":
+    @uv run python scripts/show_edges.py "{{dir}}"
 
-# what does a symbol call?
+# show symbol dependency graph
 [group: 'run']
-symbol-graph name depth="1" dir=".":
-    @uv run python scripts/symbol-graph.py "{{name}}" "{{depth}}" "{{dir}}"
+show-symbol name depth="1" dir=".":
+    @uv run python scripts/show_symbol.py "{{name}}" "{{depth}}" "{{dir}}"
+
+# show blast radius for a symbol
+[group: 'run']
+show-impact name direction="upstream" depth="3" dir=".":
+    @uv run python scripts/show_impact.py "{{name}}" "{{direction}}" "{{depth}}" "{{dir}}"
+
+# search symbols by keyword
+[group: 'run']
+search query kind="-" limit="10" dir=".":
+    @uv run python scripts/search.py "{{query}}" "{{kind}}" "{{limit}}" "{{dir}}"
+
+# show git changes mapped to symbols
+[group: 'run']
+show-changes scope="unstaged" dir=".":
+    @uv run python scripts/show_changes.py "{{scope}}" "{{dir}}"
 
 # ─── lint ─────────────────────────────────────────────────────────────
 
