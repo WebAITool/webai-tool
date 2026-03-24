@@ -8,16 +8,14 @@ from langchain_core.prompts import (
     AIMessagePromptTemplate,
     ChatPromptTemplate
 )
+from langchain_core.exceptions import OutputParserException
 
-from dev_env import run_pyright 
+from dev_env import git, run_pyright
 from makesrs_prod import make_tree
 from langchain_core.messages import HumanMessage, AIMessage
-from langchain_core.messages import ToolMessage
-from langchain_core.output_parsers import StrOutputParser
-from typing import TypedDict, List, Annotated
-import operator
+from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
+from typing import TypedDict, List
 from langgraph.graph import StateGraph, END
-from lg_tools import shell_exec
 from langchain_experimental.utilities import PythonREPL
 from langchain_core.runnables import RunnableLambda
 from difflib import SequenceMatcher
@@ -31,6 +29,7 @@ llm = ChatOpenAI(
     temperature=0.5,
     api_key=os.getenv('API_KEY')
 )
+
 
 class AgentState(TypedDict):
     goal: str
@@ -48,6 +47,7 @@ class AgentState(TypedDict):
     prjdir: str
     tree: str
 
+
 common_context = '''goal of the agent system is:\n{goal}\nend of the goal.\n
         it is list of your last actions:\n{actions}\n
         End of the action list.\n
@@ -58,7 +58,6 @@ common_context = '''goal of the agent system is:\n{goal}\nend of the goal.\n
         '\nend of specification\n'
         'current project file structure is:\n{tree}\n'
         '''
-
 
 
 def think(state: AgentState):
@@ -91,18 +90,20 @@ def state_check(state: AgentState):
     retdict = {'iter_cnt': state['iter_cnt'] + 1,
                'decision': 'code_action'
                }
-    
+
     if 'GOAL_ACHIEVED' in state['plan'] and 'NOT_TRUE' not in state['plan']:
         retdict['decision'] = 'try_to_end'
     if state['iter_cnt'] >= state['max_steps']:
         retdict['decision'] = END
-    
+
     retdict['actions'] = state['actions'][-state['action_memory_size']:]
     slen = len(state['thoughts'])
-    if slen > 2 and similarity(state['thoughts'][slen - 1], state['thoughts'][slen - 2]) > 0.95:
+    if slen > 2 and similarity(
+            state['thoughts'][slen - 1], state['thoughts'][slen - 2]) > 0.95:
         print('SIMILARITY > 0.95! RESETTING THOUGHTS')
-        retdict['wakeup'] = 'you was repeated your last thought. WAKE UP! If action does not do anything, try different action, not be mad!' 
-        retdict['thoughts'] = ['Agent started repeating itself, thought list was cleared.']
+        retdict['wakeup'] = 'you was repeated your last thought. WAKE UP! If action does not do anything, try different action, not be mad!'
+        retdict['thoughts'] = [
+            'Agent started repeating itself, thought list was cleared.']
     else:
         retdict['wakeup'] = ''
     return retdict
@@ -130,7 +131,7 @@ def try_to_end(state: AgentState):
             'your answer is wrong. You should answer exactly YES or NO. Are you sure that your goal is achieved? Have you check and test everything?')
         msglist.append(AIMessagePromptTemplate.from_template(answer))
         msglist.append(wrong_answer_msg)
-            
+
 
 def extract_code(text: str) -> str:
     if "```" in text:
@@ -152,6 +153,7 @@ def extract_code(text: str) -> str:
             return code_block.strip()
     return text.strip()
 
+
 def code_action(state: AgentState):
     sysmsg = SystemMessagePromptTemplate.from_template(
         'you are code agent of the agent system')
@@ -167,32 +169,100 @@ def code_action(state: AgentState):
     msglist = [sysmsg, usrmsg]
     repl = PythonREPL()
     action = ''
-    for i in range(state['patience']):
+    for _ in range(state['patience']):
         chat = ChatPromptTemplate.from_messages(msglist)
         chain = (chat | llm | StrOutputParser() | RunnableLambda(extract_code))
         print('code writing...')
         code = chain.invoke(state)
-        sentinel = 'code was executed without any errors' 
+        sentinel = 'code was executed without any errors'
         print('code executing...')
         console_out = repl.run(code + f'\nprint(\'{sentinel}\')')
         if sentinel in console_out:
-            pyright_result = run_pyright() 
+            pyright_result = run_pyright()
             action += f'\nACTION:\nexecuted code:\n{code}\nresult:\n{console_out}\nPyright check:{pyright_result}\n'
             logging.debug(action)
             return {
-                'actions': state['actions'] + [action], 
+                'actions': state['actions'] + [action],
                 'tree': make_tree(state['prjdir'])
-                }
+            }
         msglist.append(AIMessage(code))
         error_report = HumanMessage(
             'there was some errors in your code, here is execution logs:\n' + console_out)
         print('ERROR: ', console_out)
         msglist.append(error_report)
 
-    return {'actions': state['actions'] + ['\nACTION\ncode was not executed, too many failed attempts for code agent']}
+    return {'actions': state['actions'] + [
+        '\nACTION\ncode was not executed, too many failed attempts for code agent']}
 
 
-def get_initial_state(goal: str, spec: str, prjdir:str, max_steps: int, patience=5, action_memory_size=5):
+def commit(state: AgentState):
+    sysmsg = SystemMessagePromptTemplate.from_template(
+        'you are code agent of the agent system')
+    usrmsg = HumanMessagePromptTemplate.from_template(
+        'look at the plan from the thinker agent:\n{plan}\nend of plan.'
+        'list of your previous actions is\n{actions}\nend of the list.'
+        'Now you can commit some files.'
+        'List of files that are untracked or have changes:\n' +
+        str(git.get_dirty_files()) + '\nend of list.'
+        'Do you want to commit something? Answer YES or NO')
+
+    msglist = [sysmsg, usrmsg]
+    chat = ChatPromptTemplate.from_messages(msglist)
+    chain = (chat | llm | StrOutputParser())
+    answer = chain.invoke(state)
+
+    if 'NO' in answer or 'YES' not in answer:
+        return {}
+
+    print('commiting...')
+
+    msglist.append(HumanMessage(
+        'Now you must describe commit information - files to commit and commit message.'
+        'Your answer should be nothing except json object with following structure:\n'
+        '{"files": ["path/to/file1","path/to/file2"], "message": "commit message"}\n'
+        'end of structure\n'
+        'All file paths are relative from the project root.'))
+
+    for _ in range(2):
+        chat = ChatPromptTemplate.from_messages(msglist)
+        chain = (chat | llm | JsonOutputParser())
+        try:
+            answer = chain.invoke(state)
+        except OutputParserException as e:
+            msglist.append(
+                HumanMessage(
+                    'Error with parsing your json: ' +
+                    str(e)))
+        else:
+            msglist.append(AIMessage(str(answer)))
+            if 'files' in answer.keys() and 'message' in answer.keys():
+                try:
+                    git.commit(answer['files'], answer['message'])
+                except FileNotFoundError as e:
+                    msglist.append(
+                        HumanMessage('You have a mistake in file path: ' + str(e.filename)))
+                else:
+                    action = '\nACTION:\n' + \
+                        f'files={str(answer["files"])} commited ' + \
+                        f'with message={answer["message"]}'
+
+                    logging.debug(
+                        f'COMMIT files={str(answer["files"])} with message={answer["message"]}')
+
+                    return {'actions': state['actions'] + [action]}
+            else:
+                prompt = 'Your json object structure is invalid:\n'
+                if 'files' not in answer.keys():
+                    prompt += ' - "files" key is missing in json\n'
+                if 'message' not in answer.keys():
+                    prompt += ' - "message" key is missing in json\n'
+                msglist.append(HumanMessage(prompt))
+
+        logging.error('agent failed to commit, msglist=' + str(msglist))
+
+
+def get_initial_state(goal: str, spec: str, prjdir: str,
+                      max_steps: int, patience=5, action_memory_size=5):
     return AgentState({
         'action_memory_size': action_memory_size,
         'actions': [],
@@ -210,17 +280,25 @@ def get_initial_state(goal: str, spec: str, prjdir:str, max_steps: int, patience
         'tree': ''
     })
 
-graph = StateGraph(state_schema=AgentState)
-nodefuncs = [think, state_check, try_to_end, code_action]
-for node in nodefuncs:
-    graph.add_node(node.__name__, node)
-graph.add_edge('think', 'state_check')
-graph.add_conditional_edges('state_check', lambda state: state['decision'])
-graph.add_conditional_edges('try_to_end', lambda state: state['decision'])
-graph.add_edge('code_action', 'think')
-graph.set_entry_point('think')
-agent = graph.compile()
+
 config = {"recursion_limit": 200}
+
+
+def create_agent(commits_enabled: bool):
+    graph = StateGraph(state_schema=AgentState)
+    nodefuncs = [think, state_check, try_to_end, code_action, commit]
+    for node in nodefuncs:
+        graph.add_node(node.__name__, node)
+    graph.add_edge('think', 'state_check')
+    graph.add_conditional_edges('state_check', lambda state: state['decision'])
+    graph.add_conditional_edges('try_to_end', lambda state: state['decision'])
+    if commits_enabled:
+        graph.add_edge('code_action', 'commit')
+        graph.add_edge('commit', 'think')
+    else:
+        graph.add_edge('code_action', 'think')
+    graph.set_entry_point('think')
+    return graph.compile()
 
 
 def run_agent(goal, spec, max_steps=30):

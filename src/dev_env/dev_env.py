@@ -1,8 +1,10 @@
+from dataclasses import dataclass
 import logging
 from pathlib import Path
 import sys
 import venv
 import subprocess
+from .git import init_git
 
 
 PYRIGHT_CONFIG = """{
@@ -15,7 +17,17 @@ VENV_PATH: Path
 BACKEND_PATH: Path
 
 
-def prepare_dev_env(prjdir: Path) -> None:
+@dataclass
+class DevEnvConfig:
+    prjdir: Path
+    commit_branch: str
+    enable_commits: bool
+
+
+def prepare_dev_env(config: DevEnvConfig) -> None:
+    prjdir = config.prjdir
+    prjdir.mkdir(exist_ok=True, parents=True)
+
     global BACKEND_PATH
     BACKEND_PATH = prjdir / 'backend'
 
@@ -24,12 +36,16 @@ def prepare_dev_env(prjdir: Path) -> None:
 
     global VENV_PATH
     VENV_PATH = BACKEND_PATH / '.venv'
-    venv.create(str(VENV_PATH), with_pip=True)
+    if not VENV_PATH.exists():
+        venv.create(str(VENV_PATH), with_pip=True)
 
     pyright_config_path = BACKEND_PATH / 'pyrightconfig.json'
+    if not pyright_config_path.exists():
+        with pyright_config_path.open('w+') as file:
+            file.write(PYRIGHT_CONFIG)
 
-    with pyright_config_path.open('w+') as file:
-        file.write(PYRIGHT_CONFIG)
+    if config.enable_commits:
+        init_git(prjdir, config.commit_branch)
 
 
 def run_pyright() -> str:
