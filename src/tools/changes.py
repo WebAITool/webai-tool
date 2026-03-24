@@ -115,8 +115,14 @@ def detect_changes(
     total_callers = 0
 
     for file, changed in sorted(file_lines.items()):
-        abs_file = os.path.join(root, file)
-        node_ids = graph.by_file.get(abs_file, []) or graph.by_file.get(file, [])
+        # Normalize to match graph.by_file keys: os.walk produces
+        # OS-native paths (backslashes on Windows, with root prefix)
+        lookup = os.path.normpath(os.path.join(root, file))
+        node_ids = next(
+            (ids for key, ids in graph.by_file.items()
+             if os.path.normpath(key) == lookup),
+            [],
+        )
         if not node_ids:
             continue
         file_symbols = [graph.nodes[nid] for nid in node_ids]

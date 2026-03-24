@@ -1,7 +1,9 @@
 """Show git changes mapped to affected symbols and their callers."""
+import io
 import os
 import sys
 
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 if __name__ == "__main__":
