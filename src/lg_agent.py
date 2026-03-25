@@ -158,13 +158,37 @@ def extract_code(text: str) -> str:
     return text.strip()
 
 
-FRONTEND_EXTENSIONS = {'.vue', '.jsx', '.tsx', '.css', '.scss', '.sass', '.less', '.html', '.js', '.ts'}
+FRONTEND_EXTENSIONS = {
+    '.vue', '.jsx', '.tsx', '.svelte', '.astro',
+    '.css', '.scss', '.sass', '.less', '.styl',
+    '.html', '.htm',
+    '.js', '.ts', '.mjs', '.cjs',
+    '.json',
+    '.svg', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.ico',
+    '.woff', '.woff2', '.ttf', '.eot', '.otf',
+    '.mdx',
+}
+
+def find_frontend_root(prjdir: str) -> Optional[Path]:
+    prjdir_path = Path(prjdir)
+    
+    for candidate in [prjdir_path / 'frontend', prjdir_path / 'src']:
+        if candidate.exists() and (candidate / 'package.json').exists():
+            return candidate
+    
+    for parent in prjdir_path.parents:
+        if (parent / 'package.json').exists():
+            return parent
+    
+    if (prjdir_path / 'package.json').exists():
+        return prjdir_path
+    
+    return None
+
 
 def compute_frontend_hash(prjdir: str) -> str:
-    frontend_path = Path(prjdir) / 'frontend'
-    if not frontend_path.exists():
-        frontend_path = Path(prjdir) / 'src'
-    if not frontend_path.exists():
+    frontend_path = find_frontend_root(prjdir)
+    if not frontend_path:
         return ""
     
     hasher = hashlib.md5()
@@ -173,9 +197,12 @@ def compute_frontend_hash(prjdir: str) -> str:
     for ext in FRONTEND_EXTENSIONS:
         for filepath in frontend_path.rglob(f'*{ext}'):
             if filepath.is_file():
+                rel_path = filepath.relative_to(frontend_path)
+                if any(skip in str(rel_path) for skip in ['node_modules', 'dist', 'build', '.git']):
+                    continue
                 try:
                     with open(filepath, 'rb') as f:
-                        hasher.update(filepath.name.encode())
+                        hasher.update(str(rel_path).encode())
                         hasher.update(f.read())
                     file_count += 1
                 except Exception:
@@ -236,24 +263,19 @@ def code_action(state: AgentState):
             
             frontend_result = ""
             new_frontend_hash = ""
-            frontend_path = Path(state['prjdir']) / 'frontend'
-            if not frontend_path.exists():
-                frontend_path = Path(state['prjdir']) / 'src'
+            frontend_path = find_frontend_root(state['prjdir'])
             old_hash = state.get('frontend_hash', '')
             changed, new_frontend_hash = frontend_changed(state['prjdir'], old_hash)
             
-            if frontend_path.exists() and changed:
-                print('frontend files changed, running UI verification...')
+            if frontend_path and changed:
+                print(f'frontend files changed in {frontend_path}, running UI verification...')
                 try:
                     success, feedback = check_frontend(
                         prjdir=state['prjdir'],
                         goal=state.get('goal', ''),
                         spec=state.get('spec', '')
                     )
-                    if success:
-                        frontend_result = "UI verification PASSED"
-                    else:
-                        frontend_result = f"UI verification ISSUES:\n{feedback[:500]}"
+                    frontend_result = f"UI verification:\n{feedback}"
                 except Exception as e:
                     frontend_result = f"UI verification error: {e}"
             
@@ -275,13 +297,13 @@ def code_action(state: AgentState):
 
 def frontend_verify(state: AgentState):
     prjdir = state['prjdir']
-    frontend_path = Path(prjdir) / 'frontend'
+    frontend_path = find_frontend_root(prjdir)
     
-    if not frontend_path.exists():
-        print('frontend_verify... no frontend directory, ending')
+    if not frontend_path:
+        print('frontend_verify... no frontend directory found, ending')
         return {'decision': END}
     
-    print('frontend_verify... running Playwright + LLM Vision analysis')
+    print(f'frontend_verify... running Playwright + LLM Vision analysis on {frontend_path}')
     
     try:
         success, feedback = check_frontend(
@@ -290,15 +312,11 @@ def frontend_verify(state: AgentState):
             spec=state.get('spec', '')
         )
         
-        if success:
-            print('frontend_verify... PASSED, ending')
-            return {'decision': END}
-        else:
-            print('frontend_verify... ISSUES FOUND, returning to think')
-            return {
-                'decision': 'think',
-                'wakeup': f'\n[FRONTEND VERIFY - ISSUES FOUND]\n{feedback}\n\nYou must fix these UI issues before finishing.\n'
-            }
+        print('frontend_verify... analysis complete, returning to think')
+        return {
+            'decision': 'think',
+            'wakeup': f'\n[FRONTEND VERIFY - UI ANALYSIS]\n{feedback}\n\nReview this feedback and fix any issues if needed.\n'
+        }
     except Exception as e:
         print(f'frontend_verify error: {e}')
         return {'decision': END}

@@ -214,9 +214,9 @@ Provide actionable feedback."""
         try:
             base_url = f"http://localhost:{port}"
             
-            routes = self.discover_routes(frontend_path)
-            routes = self.crawl_links(base_url, max_pages)
-            routes = list(dict.fromkeys(routes))[:max_pages]
+            routes_static = self.discover_routes(frontend_path)
+            routes_crawled = self.crawl_links(base_url, max_pages)
+            routes = list(dict.fromkeys(routes_static + routes_crawled))[:max_pages]
             
             print(f"Found {len(routes)} routes: {routes}")
             
@@ -236,11 +236,8 @@ Provide actionable feedback."""
                 
                 analysis = self.analyze_ui(screenshot, route, goal, spec, max_tokens)
                 results.append(f"[{route}]\n{analysis}\n")
-                
-                if "error" in analysis.lower() or "fail" in analysis.lower():
-                    all_success = False
 
-            return all_success, "\n".join(results)
+            return True, "\n".join(results)
 
         finally:
             self.stop_dev_server()
@@ -253,10 +250,8 @@ def check_frontend(
 ) -> Tuple[bool, str]:
     prjdir_path = Path(prjdir)
     
-    # Find project root (where package.json is)
     project_root = prjdir_path
     if not (project_root / "package.json").exists():
-        # Check if it's in a subdirectory structure
         for parent in prjdir_path.parents:
             if (parent / "package.json").exists():
                 project_root = parent
