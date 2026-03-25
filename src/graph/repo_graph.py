@@ -320,41 +320,115 @@ class RepoGraphLite:
 
         return "\n".join(lines)
 
+    @staticmethod
+    def _tokenize(text: str) -> list[str]:
+        """Split on underscores, camelCase, slashes, dots, and whitespace."""
+        import re
+        return re.findall(r'[a-z0-9]+', re.sub(r'([A-Z])', r' \1', text).lower())
+
+    @staticmethod
+    def _fuzzy_tf(query_token: str, doc_tokens: list[str]) -> float:
+        """Count matches: exact = 1.0, substring = 0.3."""
+        tf = 0.0
+        for dt in doc_tokens:
+            if query_token == dt:
+                tf += 1.0
+            elif query_token in dt or dt in query_token:
+                tf += 0.3
+        return tf
+
     def search(self, query: str, kind: str | None = None,
                limit: int = 10) -> str:
-        """Keyword search over symbols. Returns ranked results."""
-        tokens = query.lower().split()
-        if not tokens:
-            return f'Results for "{query}" (0 found):'
+        """BM25-ranked keyword search over symbols with fuzzy substring matching."""
+        import math
 
-        scored: list[tuple[int, str, int, str]] = []  # (score, file, line, node_id)
+        tokens = self._tokenize(query)
+        if not tokens:
+            return f'Results for "{query}": 0 found'
+
+        # Build pseudo-documents: name boosted 3x
+        docs: list[tuple[str, list[str]]] = []  # (node_id, token_list)
         for node_id, node in self.nodes.items():
             if kind and node.kind != kind:
                 continue
-            score = 0
-            name_lower = node.name.lower()
+            text = f"{node.name} {node.name} {node.name} {node.file} {node.scope}"
+            doc_tokens = self._tokenize(text)
+            docs.append((node_id, doc_tokens))
+
+        if not docs:
+            return f'Results for "{query}": 0 found'
+
+        # BM25 parameters
+        k1 = 1.5
+        b = 0.75
+        n_docs = len(docs)
+        avgdl = sum(len(d) for _, d in docs) / n_docs
+
+        # IDF per query token (count docs with any match — exact or substring)
+        idf: dict[str, float] = {}
+        for tok in tokens:
+            df = sum(1 for _, d in docs if self._fuzzy_tf(tok, d) > 0)
+            idf[tok] = math.log((n_docs - df + 0.5) / (df + 0.5) + 1.0)
+
+        # Score each document
+        scored: list[tuple[float, str, int, str]] = []
+        for node_id, doc_tokens in docs:
+            score = 0.0
+            dl = len(doc_tokens)
             for tok in tokens:
-                if tok == name_lower:
-                    score += 10
-                elif tok in name_lower:
-                    score += 3
-                if tok in node.file.lower():
-                    score += 1
-                if tok in node.scope.lower():
-                    score += 1
+                tf = self._fuzzy_tf(tok, doc_tokens)
+                if tf > 0:
+                    numerator = tf * (k1 + 1)
+                    denominator = tf + k1 * (1 - b + b * dl / avgdl)
+                    score += idf.get(tok, 0) * numerator / denominator
             if score > 0:
+                node = self.nodes[node_id]
                 scored.append((-score, node.file, node.line, node_id))
 
         scored.sort()
         top = scored[:limit]
 
-        lines = [f'Results for "{query}": {len(scored)} found']
+        total = len(scored)
+        lines = [f'Results for "{query}": {total} found']
         for neg_score, _, _, nid in top:
             n = self.nodes[nid]
             display = f"{n.name}@{n.scope}" if n.kind == "Method" and n.scope else n.name
-            lines.append(f"  {n.kind} {display} ({n.file}:{n.line}) — score {-neg_score}")
+            lines.append(f"  {n.kind} {display} ({n.file}:{n.line}) — score {-neg_score:.1f}")
 
         return "\n".join(lines)
+
+    def remove_file(self, filepath: str) -> None:
+        """Remove all nodes and edges associated with a file."""
+        # Collect node IDs to remove
+        remove_ids = set(self.by_file.get(filepath, []))
+        if not remove_ids:
+            return
+
+        # Remove nodes
+        for nid in remove_ids:
+            node = self.nodes.pop(nid, None)
+            if node and node.name in self.by_name:
+                self.by_name[node.name] = [
+                    x for x in self.by_name[node.name] if x != nid
+                ]
+                if not self.by_name[node.name]:
+                    del self.by_name[node.name]
+
+        # Remove from by_file
+        self.by_file.pop(filepath, None)
+
+        # Remove edges involving these nodes
+        self.edges = [
+            e for e in self.edges
+            if e.source_id not in remove_ids and e.target_id not in remove_ids
+        ]
+
+        # Rebuild incoming/outgoing indexes from remaining edges
+        self.incoming.clear()
+        self.outgoing.clear()
+        for e in self.edges:
+            self.incoming[e.target_id].append(e)
+            self.outgoing[e.source_id].append(e)
 
     def _node_file(self, node_id: str) -> str | None:
         """Return the file for a node_id, handling both real nodes and 'File:...' fallbacks."""

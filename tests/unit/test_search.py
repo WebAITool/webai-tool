@@ -18,7 +18,7 @@ def test_search_exact_name_match():
     g = _make_graph(tags)
     result = g.search("login")
     assert "login" in result
-    assert "score 10" in result
+    assert "score" in result  # BM25 float score
 
 
 def test_search_substring_match():
@@ -29,7 +29,7 @@ def test_search_substring_match():
     g = _make_graph(tags)
     result = g.search("login")
     assert "handle_login" in result
-    assert "score 3" in result
+    assert "score" in result  # BM25 float score
 
 
 def test_search_case_insensitive():
