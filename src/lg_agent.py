@@ -9,19 +9,17 @@ from langchain_core.prompts import (
     AIMessagePromptTemplate,
     ChatPromptTemplate
 )
+from langchain_core.exceptions import OutputParserException
 
-from dev_env import run_pyright 
+from dev_env import git, run_pyright
 from makesrs_prod import make_tree
 from repomap import get_repo_structure
 from dev_env import run_pyright, prepare_dev_env
 from frontend_check import check_frontend
 from langchain_core.messages import HumanMessage, AIMessage
-from langchain_core.messages import ToolMessage
-from langchain_core.output_parsers import StrOutputParser
-from typing import TypedDict, List, Annotated
-import operator
+from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
+from typing import TypedDict, List
 from langgraph.graph import StateGraph, END
-from lg_tools import shell_exec
 from langchain_experimental.utilities import PythonREPL
 from langchain_core.runnables import RunnableLambda
 from difflib import SequenceMatcher
@@ -35,6 +33,7 @@ llm = ChatOpenAI(
     temperature=0.5,
     api_key=os.getenv('API_KEY')
 )
+
 
 class AgentState(TypedDict):
     goal: str
@@ -53,6 +52,7 @@ class AgentState(TypedDict):
     tree: str
     frontend_hash: str
 
+
 common_context = '''goal of the agent system is:\n{goal}\nend of the goal.\n
         it is list of your last actions:\n{actions}\n
         End of the action list.\n
@@ -63,7 +63,6 @@ common_context = '''goal of the agent system is:\n{goal}\nend of the goal.\n
         '\nend of specification\n'
         'current project file structure is:\n{tree}\n'
         '''
-
 
 
 def think(state: AgentState):
@@ -96,18 +95,20 @@ def state_check(state: AgentState):
     retdict = {'iter_cnt': state['iter_cnt'] + 1,
                'decision': 'code_action'
                }
-    
+
     if 'GOAL_ACHIEVED' in state['plan'] and 'NOT_TRUE' not in state['plan']:
         retdict['decision'] = 'try_to_end'
     if state['iter_cnt'] >= state['max_steps']:
         retdict['decision'] = END
-    
+
     retdict['actions'] = state['actions'][-state['action_memory_size']:]
     slen = len(state['thoughts'])
-    if slen > 2 and similarity(state['thoughts'][slen - 1], state['thoughts'][slen - 2]) > 0.95:
+    if slen > 2 and similarity(
+            state['thoughts'][slen - 1], state['thoughts'][slen - 2]) > 0.95:
         print('SIMILARITY > 0.95! RESETTING THOUGHTS')
-        retdict['wakeup'] = 'you was repeated your last thought. WAKE UP! If action does not do anything, try different action, not be mad!' 
-        retdict['thoughts'] = ['Agent started repeating itself, thought list was cleared.']
+        retdict['wakeup'] = 'you was repeated your last thought. WAKE UP! If action does not do anything, try different action, not be mad!'
+        retdict['thoughts'] = [
+            'Agent started repeating itself, thought list was cleared.']
     else:
         retdict['wakeup'] = ''
     return retdict
@@ -158,7 +159,18 @@ def extract_code(text: str) -> str:
     return text.strip()
 
 
-FRONTEND_EXTENSIONS = {'.vue', '.jsx', '.tsx', '.css', '.scss', '.sass', '.less', '.html', '.js', '.ts'}
+FRONTEND_EXTENSIONS = {
+    '.vue',
+    '.jsx',
+    '.tsx',
+    '.css',
+    '.scss',
+    '.sass',
+    '.less',
+    '.html',
+    '.js',
+    '.ts'}
+
 
 def compute_frontend_hash(prjdir: str) -> str:
     frontend_path = Path(prjdir) / 'frontend'
@@ -166,10 +178,10 @@ def compute_frontend_hash(prjdir: str) -> str:
         frontend_path = Path(prjdir) / 'src'
     if not frontend_path.exists():
         return ""
-    
+
     hasher = hashlib.md5()
     file_count = 0
-    
+
     for ext in FRONTEND_EXTENSIONS:
         for filepath in frontend_path.rglob(f'*{ext}'):
             if filepath.is_file():
@@ -180,10 +192,10 @@ def compute_frontend_hash(prjdir: str) -> str:
                     file_count += 1
                 except Exception:
                     pass
-    
+
     if file_count == 0:
         return ""
-    
+
     return hasher.hexdigest()
 
 
@@ -213,12 +225,12 @@ def code_action(state: AgentState):
     msglist = [sysmsg, usrmsg]
     repl = PythonREPL()
     action = ''
-    for i in range(state['patience']):
+    for _ in range(state['patience']):
         chat = ChatPromptTemplate.from_messages(msglist)
         chain = (chat | llm | StrOutputParser() | RunnableLambda(extract_code))
         print('code writing...')
         code = chain.invoke(state)
-        sentinel = 'code was executed without any errors' 
+        sentinel = 'code was executed without any errors'
         print('code executing...')
         console_out = repl.run(code + f'\nprint(\'{sentinel}\')')
         if sentinel in console_out:
@@ -227,21 +239,18 @@ def code_action(state: AgentState):
                 tree_result = repo_structure[:1000]
             except Exception as e:
                 tree_result = f"Tree-sitter error: {e}"
-            
-            try:
-                prepare_dev_env(Path(state['prjdir']))
-                pyright_result = run_pyright()
-            except Exception as e:
-                pyright_result = f"Pyright error: {e}"
-            
+
+            pyright_result = run_pyright()
+
             frontend_result = ""
             new_frontend_hash = ""
             frontend_path = Path(state['prjdir']) / 'frontend'
             if not frontend_path.exists():
                 frontend_path = Path(state['prjdir']) / 'src'
             old_hash = state.get('frontend_hash', '')
-            changed, new_frontend_hash = frontend_changed(state['prjdir'], old_hash)
-            
+            changed, new_frontend_hash = frontend_changed(
+                state['prjdir'], old_hash)
+
             if frontend_path.exists() and changed:
                 print('frontend files changed, running UI verification...')
                 try:
@@ -256,40 +265,107 @@ def code_action(state: AgentState):
                         frontend_result = f"UI verification ISSUES:\n{feedback[:500]}"
                 except Exception as e:
                     frontend_result = f"UI verification error: {e}"
-            
+
             action += f'\nACTION:\nexecuted code:\n{code}\nresult:\n{console_out}\nTree-sitter:\n{tree_result}\nPyright:\n{pyright_result}\nFrontend:\n{frontend_result}\n'
             logging.debug(action)
             return {
-                'actions': state['actions'] + [action], 
+                'actions': state['actions'] + [action],
                 'tree': repo_structure if 'repo_structure' in dir() else make_tree(state['prjdir']),
                 'frontend_hash': new_frontend_hash
-                }
+            }
         msglist.append(AIMessage(code))
         error_report = HumanMessage(
             'there was some errors in your code, here is execution logs:\n' + console_out)
         print('ERROR: ', console_out)
         msglist.append(error_report)
 
-    return {'actions': state['actions'] + ['\nACTION\ncode was not executed, too many failed attempts for code agent']}
+    return {'actions': state['actions'] + [
+        '\nACTION\ncode was not executed, too many failed attempts for code agent']}
+
+
+def commit(state: AgentState):
+    sysmsg = SystemMessagePromptTemplate.from_template(
+        'you are code agent of the agent system')
+    usrmsg = HumanMessagePromptTemplate.from_template(
+        'look at the plan from the thinker agent:\n{plan}\nend of plan.'
+        'list of your previous actions is\n{actions}\nend of the list.'
+        'Now you can commit some files.'
+        'List of files that are untracked or have changes:\n' +
+        str(git.get_dirty_files()) + '\nend of list.'
+        'Do you want to commit something? Answer YES or NO')
+
+    msglist = [sysmsg, usrmsg]
+    chat = ChatPromptTemplate.from_messages(msglist)
+    chain = (chat | llm | StrOutputParser())
+    answer = chain.invoke(state)
+
+    if 'NO' in answer or 'YES' not in answer:
+        return {}
+
+    print('commiting...')
+
+    msglist.append(HumanMessage(
+        'Now you must describe commit information - files to commit and commit message.'
+        'Your answer should be nothing except json object with following structure:\n'
+        '{"files": ["path/to/file1","path/to/file2"], "message": "commit message"}\n'
+        'end of structure\n'
+        'All file paths are relative from the project root.'))
+
+    for _ in range(2):
+        chat = ChatPromptTemplate.from_messages(msglist)
+        chain = (chat | llm | JsonOutputParser())
+        try:
+            answer = chain.invoke(state)
+        except OutputParserException as e:
+            msglist.append(
+                HumanMessage(
+                    'Error with parsing your json: ' +
+                    str(e)))
+        else:
+            msglist.append(AIMessage(str(answer)))
+            if 'files' in answer.keys() and 'message' in answer.keys():
+                try:
+                    git.commit(answer['files'], answer['message'])
+                except FileNotFoundError as e:
+                    msglist.append(
+                        HumanMessage('You have a mistake in file path: ' + str(e.filename)))
+                else:
+                    action = '\nACTION:\n' + \
+                        f'files={str(answer["files"])} commited ' + \
+                        f'with message={answer["message"]}'
+
+                    logging.debug(
+                        f'COMMIT files={str(answer["files"])} with message={answer["message"]}')
+
+                    return {'actions': state['actions'] + [action]}
+            else:
+                prompt = 'Your json object structure is invalid:\n'
+                if 'files' not in answer.keys():
+                    prompt += ' - "files" key is missing in json\n'
+                if 'message' not in answer.keys():
+                    prompt += ' - "message" key is missing in json\n'
+                msglist.append(HumanMessage(prompt))
+
+        logging.error('agent failed to commit, msglist=' + str(msglist))
 
 
 def frontend_verify(state: AgentState):
     prjdir = state['prjdir']
     frontend_path = Path(prjdir) / 'frontend'
-    
+
     if not frontend_path.exists():
         print('frontend_verify... no frontend directory, ending')
         return {'decision': END}
-    
+
     print('frontend_verify... running Playwright + LLM Vision analysis')
-    
+
     try:
         success, feedback = check_frontend(
             prjdir=prjdir,
             goal=state.get('goal', ''),
             spec=state.get('spec', '')
         )
-        
+
         if success:
             print('frontend_verify... PASSED, ending')
             return {'decision': END}
@@ -304,7 +380,8 @@ def frontend_verify(state: AgentState):
         return {'decision': END}
 
 
-def get_initial_state(goal: str, spec: str, prjdir:str, max_steps: int, patience=5, action_memory_size=5):
+def get_initial_state(goal: str, spec: str, prjdir: str,
+                      max_steps: int, patience=5, action_memory_size=5):
     return AgentState({
         'action_memory_size': action_memory_size,
         'actions': [],
@@ -319,21 +396,29 @@ def get_initial_state(goal: str, spec: str, prjdir:str, max_steps: int, patience
         'spec': spec,
         'thoughts': [],
         'wakeup': '',
-        'tree': '',
+        'tree': make_tree(prjdir),
         'frontend_hash': ''
     })
 
-graph = StateGraph(state_schema=AgentState)
-nodefuncs = [think, state_check, try_to_end, code_action]
-for node in nodefuncs:
-    graph.add_node(node.__name__, node)
-graph.add_edge('think', 'state_check')
-graph.add_conditional_edges('state_check', lambda state: state['decision'])
-graph.add_conditional_edges('try_to_end', lambda state: state['decision'])
-graph.add_edge('code_action', 'think')
-graph.set_entry_point('think')
-agent = graph.compile()
+
 config = {"recursion_limit": 200}
+
+
+def create_agent(commits_enabled: bool):
+    graph = StateGraph(state_schema=AgentState)
+    nodefuncs = [think, state_check, try_to_end, code_action, commit]
+    for node in nodefuncs:
+        graph.add_node(node.__name__, node)
+    graph.add_edge('think', 'state_check')
+    graph.add_conditional_edges('state_check', lambda state: state['decision'])
+    graph.add_conditional_edges('try_to_end', lambda state: state['decision'])
+    if commits_enabled:
+        graph.add_edge('code_action', 'commit')
+        graph.add_edge('commit', 'think')
+    else:
+        graph.add_edge('code_action', 'think')
+    graph.set_entry_point('think')
+    return graph.compile()
 
 
 def run_agent(goal, spec, max_steps=30):

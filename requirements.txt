@@ -9,3 +9,4 @@ playwright>=1.40.0
 python-dotenv>=1.0.0
 pyright>=1.1.0
 smolagents>=1.0.0
+GitPython

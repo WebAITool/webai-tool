@@ -3,21 +3,22 @@ import subprocess
 import os
 import platform
 
+
 @tool
 def shell_exec(cmd: str) -> str:
     """Executes a shell command and returns its output.
-    Supports any commands. 
-    
+    Supports any commands.
+
     Args:
         cmd (str): command to be executed
-    
+
     Returns:
         str: success or error message.
     """
-    
+
     if platform.system() == "Windows":
         cmd = cmd.replace('/', '\\')
-    
+
     result = subprocess.run(
         cmd,
         shell=True,
@@ -36,4 +37,3 @@ def shell_exec(cmd: str) -> str:
     else:
         error = stderr.strip() if stderr else ""
         return f"Error (code {result.returncode}):\n{error}"
-    
