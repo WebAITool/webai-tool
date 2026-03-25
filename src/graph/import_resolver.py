@@ -28,7 +28,7 @@ def _load_import_query(lang: str) -> str | None:
     return text
 
 
-def extract_imports(filepath: str, lang: str) -> list[ImportTag]:
+def extract_imports(filepath: str, lang: str, source: bytes | None = None) -> list[ImportTag]:
     """Extract ImportTag list from a source file using language-specific .scm queries."""
     from tree_sitter import Query, QueryCursor
     from tree_sitter_language_pack import get_language, get_parser
@@ -37,11 +37,12 @@ def extract_imports(filepath: str, lang: str) -> list[ImportTag]:
     if scm_text is None:
         return []
 
-    try:
-        with open(filepath, "rb") as f:
-            source = f.read()
-    except OSError:
-        return []
+    if source is None:
+        try:
+            with open(filepath, "rb") as f:
+                source = f.read()
+        except OSError:
+            return []
 
     try:
         parser = get_parser(lang)
@@ -91,14 +92,25 @@ def extract_imports(filepath: str, lang: str) -> list[ImportTag]:
 
 
 def build_suffix_index(all_files: list[str]) -> dict[str, list[str]]:
-    """Build a suffix index: normalized_path_without_ext -> [full_paths]."""
+    """Build a suffix index: normalized_path_without_ext -> [full_paths].
+
+    Also indexes .vue files with extension preserved for Vue import resolution.
+    """
     index: dict[str, list[str]] = {}
     for f in all_files:
-        p = Path(f).with_suffix("")
-        parts = p.parts
+        p = Path(f)
+        # Standard: strip extension
+        p_no_ext = p.with_suffix("")
+        parts = p_no_ext.parts
         for i in range(len(parts)):
             suffix = "/".join(parts[i:])
             index.setdefault(suffix, []).append(f)
+        # Also index with .vue extension preserved
+        if p.suffix == ".vue":
+            parts_vue = p.parts
+            for i in range(len(parts_vue)):
+                suffix = "/".join(parts_vue[i:])
+                index.setdefault(suffix, []).append(f)
     return index
 
 
@@ -118,10 +130,18 @@ def resolve_import(
     if normalized.startswith("."):
         base_dir = str(Path(from_file).parent)
         resolved = str(Path(base_dir) / normalized)
-        # os.path.normpath resolves ".." components and normalizes separators
+
+        # Try with original extension first (for .vue imports)
+        resolved_orig = os.path.normpath(resolved).replace("\\", "/")
+        parts_orig = Path(resolved_orig).parts
+        for i in range(len(parts_orig)):
+            suffix = "/".join(parts_orig[i:])
+            if suffix in suffix_index:
+                return _pick_closest(suffix_index[suffix], from_file)
+
+        # Fallback: strip extension
         normalized = os.path.normpath(str(Path(resolved).with_suffix("")))
         normalized = normalized.replace("\\", "/")  # Windows -> forward slashes
-        # Extract suffix and look up in index
         parts = Path(normalized).parts
         for i in range(len(parts)):
             suffix = "/".join(parts[i:])

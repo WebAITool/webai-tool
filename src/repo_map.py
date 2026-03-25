@@ -92,6 +92,8 @@ _EXT_TO_LANG: dict[str, SupportedLanguage] = {
     ".jsx": "javascript",
     ".ts": "typescript",
     ".tsx": "tsx",
+    # Vue
+    ".vue": "vue",
 }
 
 
@@ -148,6 +150,77 @@ def _extract_tags_and_receivers(
             source = f.read()
     except OSError:
         return [], []
+
+    # Vue SFC: extract script block, parse as JS/TS, add template refs
+    if lang == "vue":
+        from vue_utils import extract_vue_script, extract_vue_template_refs
+
+        result = extract_vue_script(filepath=filepath)
+        if result is None:
+            return [], []
+        script_bytes, actual_lang, line_offset = result
+
+        scm_text = _load_query(actual_lang)
+        if scm_text is None:
+            return [], []
+
+        try:
+            parser = get_parser(actual_lang)
+            ts_lang = get_language(actual_lang)
+        except Exception:
+            return [], []
+
+        tree = parser.parse(script_bytes)
+        query = Query(ts_lang, scm_text)
+        cursor = QueryCursor(query)
+        captures = cursor.captures(tree.root_node)
+
+        tags: list[Tag] = []
+        receiver_nodes: dict[int, str] = {}
+
+        for capture_name, nodes in captures.items():
+            if capture_name == "method.receiver":
+                for node in nodes:
+                    line = node.start_point[0] + 1 + line_offset
+                    receiver_nodes[line] = node.text.decode("utf-8", errors="replace")
+                continue
+            if ".definition." in capture_name:
+                kind = "def"
+            elif ".reference." in capture_name:
+                kind = "ref"
+            else:
+                continue
+            for node in nodes:
+                name = node.text.decode("utf-8", errors="replace")
+                line = node.start_point[0] + 1 + line_offset
+                scope = _find_scope(node, tree.root_node)
+                node_type = node.parent.type if node.parent else ""
+                tags.append(Tag(
+                    file=filepath, name=name, line=line,
+                    kind=kind, scope=scope, node_type=node_type,
+                    capture_name=capture_name,
+                ))
+
+        # Add template refs (components + event handlers)
+        for ref_name, ref_line in extract_vue_template_refs(filepath=filepath):
+            tags.append(Tag(
+                file=filepath, name=ref_name, line=ref_line,
+                kind="ref", capture_name="name.reference.call",
+            ))
+
+        # Build receiver tags
+        receiver_tags: list[_ReceiverTag] = []
+        for t in tags:
+            if t.kind == "ref" and t.line in receiver_nodes:
+                receiver_tags.append(_ReceiverTag(
+                    file=filepath,
+                    receiver_name=receiver_nodes[t.line],
+                    method_name=t.name,
+                    line=t.line,
+                    scope=t.scope,
+                ))
+
+        return tags, receiver_tags
 
     scm_text = _load_query(lang)
     if scm_text is None:
@@ -250,43 +323,19 @@ def _parse_vue(filepath: str) -> list[Tag]:
 
 
 def _parse_vue_script(script_node, filepath: str) -> list[Tag]:
-    """Extract Tags from a Vue <script> block using .scm queries."""
-    import tempfile
+    """Extract Tags from a Vue <script> block using vue_utils + .scm queries."""
+    from vue_utils import extract_vue_script
 
-    lang = "javascript"
-    start_tag = None
-    for child in script_node.children:
-        if child.type == "start_tag":
-            start_tag = child
-            break
-    if start_tag:
-        for attr in start_tag.children:
-            if attr.type == "attribute":
-                attr_name = None
-                attr_value = None
-                for ac in attr.children:
-                    if ac.type == "attribute_name":
-                        attr_name = ac.text.decode("utf-8", errors="replace")
-                    elif ac.type == "quoted_attribute_value":
-                        attr_value = ac.text.decode("utf-8", errors="replace").strip(
-                            "\"'"
-                        )
-                if attr_name == "lang" and attr_value in ("ts", "typescript"):
-                    lang = "typescript"
-
-    raw_text = None
-    for child in script_node.children:
-        if child.type == "raw_text":
-            raw_text = child
-            break
-
-    if not raw_text:
+    result = extract_vue_script(filepath=filepath)
+    if result is None:
         return []
+    script_bytes, lang, line_offset = result
 
-    script_source = raw_text.text
+    # Re-use _extract_tags by writing to temp file (existing pattern for _parse_vue display)
+    import tempfile
     ext = ".ts" if lang == "typescript" else ".js"
     with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as f:
-        f.write(script_source)
+        f.write(script_bytes)
         f.flush()
         tmp_path = f.name
     try:
@@ -294,9 +343,9 @@ def _parse_vue_script(script_node, filepath: str) -> list[Tag]:
     finally:
         os.unlink(tmp_path)
 
-    # Fix file path: tags from temp file should reference the .vue file
     for tag in tags:
         tag.file = filepath
+        tag.line += line_offset
 
     return tags
 
@@ -329,6 +378,17 @@ def _parse_file(filepath: str) -> list[Tag]:
         return _extract_tags(filepath, lang)
 
     return []
+
+
+def _tag_label(tag: Tag) -> str:
+    """Return 'name (kind)' using the capture_name suffix, e.g. 'login (function)'."""
+    # capture_name looks like "name.definition.function" → extract "function"
+    parts = tag.capture_name.rsplit(".", 1)
+    kind = parts[-1] if len(parts) > 1 else ""
+    # function nested inside a class → method
+    if kind == "function" and tag.scope:
+        kind = "method"
+    return f"{tag.name} ({kind})" if kind else tag.name
 
 
 # ---------------------------------------------------------------------------
@@ -442,13 +502,13 @@ class RepomapGenerator:
         for i, (tag, kids) in enumerate(items):
             is_last = i == len(items) - 1
             connector = "└── " if is_last else "├── "
-            lines.append(f"{prefix}{connector}{tag.name}")
+            lines.append(f"{prefix}{connector}{_tag_label(tag)}")
             if kids:
                 ext = prefix + ("    " if is_last else "│   ")
                 for j, kid in enumerate(kids):
                     kid_last = j == len(kids) - 1
                     kid_conn = "└── " if kid_last else "├── "
-                    lines.append(f"{ext}{kid_conn}{kid.name}")
+                    lines.append(f"{ext}{kid_conn}{_tag_label(kid)}")
 
 
 # ---------------------------------------------------------------------------
