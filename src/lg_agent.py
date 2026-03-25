@@ -1,6 +1,7 @@
 import os
 import logging
 import dotenv
+import hashlib
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import (
     HumanMessagePromptTemplate,
@@ -12,6 +13,9 @@ from langchain_core.exceptions import OutputParserException
 
 from dev_env import git, run_pyright
 from makesrs_prod import make_tree
+from repomap import get_repo_structure
+from dev_env import run_pyright, prepare_dev_env
+from frontend_check import check_frontend
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
 from typing import TypedDict, List
@@ -19,7 +23,7 @@ from langgraph.graph import StateGraph, END
 from langchain_experimental.utilities import PythonREPL
 from langchain_core.runnables import RunnableLambda
 from difflib import SequenceMatcher
-
+from pathlib import Path
 
 dotenv.load_dotenv()
 llm = ChatOpenAI(
@@ -46,6 +50,7 @@ class AgentState(TypedDict):
     wakeup: str
     prjdir: str
     tree: str
+    frontend_hash: str
 
 
 common_context = '''goal of the agent system is:\n{goal}\nend of the goal.\n
@@ -154,10 +159,50 @@ def extract_code(text: str) -> str:
     return text.strip()
 
 
+FRONTEND_EXTENSIONS = {'.vue', '.jsx', '.tsx', '.css', '.scss', '.sass', '.less', '.html', '.js', '.ts'}
+
+def compute_frontend_hash(prjdir: str) -> str:
+    frontend_path = Path(prjdir) / 'frontend'
+    if not frontend_path.exists():
+        frontend_path = Path(prjdir) / 'src'
+    if not frontend_path.exists():
+        return ""
+    
+    hasher = hashlib.md5()
+    file_count = 0
+    
+    for ext in FRONTEND_EXTENSIONS:
+        for filepath in frontend_path.rglob(f'*{ext}'):
+            if filepath.is_file():
+                try:
+                    with open(filepath, 'rb') as f:
+                        hasher.update(filepath.name.encode())
+                        hasher.update(f.read())
+                    file_count += 1
+                except Exception:
+                    pass
+    
+    if file_count == 0:
+        return ""
+    
+    return hasher.hexdigest()
+
+
+def frontend_changed(prjdir: str, old_hash: str) -> tuple[bool, str]:
+    new_hash = compute_frontend_hash(prjdir)
+    if not new_hash:
+        return False, ""
+    if not old_hash:
+        return True, new_hash
+    return new_hash != old_hash, new_hash
+
+
 def code_action(state: AgentState):
     sysmsg = SystemMessagePromptTemplate.from_template(
         'you are code agent of the agent system')
     usrmsg = HumanMessagePromptTemplate.from_template(
+        'Project directory: {prjdir}\n'
+        'All file paths must be absolute, starting with this directory.\n'
         'specification of project you are working on is:\n{spec}\nend of specification.'
         'goal of agentic system is\n{goal}\nend of the goal.'
         'list of your previous actions is\n{actions}\nend of the list.'
@@ -178,13 +223,44 @@ def code_action(state: AgentState):
         print('code executing...')
         console_out = repl.run(code + f'\nprint(\'{sentinel}\')')
         if sentinel in console_out:
+            try:
+                repo_structure = get_repo_structure(state['prjdir'])
+                tree_result = repo_structure[:1000]
+            except Exception as e:
+                tree_result = f"Tree-sitter error: {e}"
+            
             pyright_result = run_pyright()
-            action += f'\nACTION:\nexecuted code:\n{code}\nresult:\n{console_out}\nPyright check:{pyright_result}\n'
+            
+            frontend_result = ""
+            new_frontend_hash = ""
+            frontend_path = Path(state['prjdir']) / 'frontend'
+            if not frontend_path.exists():
+                frontend_path = Path(state['prjdir']) / 'src'
+            old_hash = state.get('frontend_hash', '')
+            changed, new_frontend_hash = frontend_changed(state['prjdir'], old_hash)
+            
+            if frontend_path.exists() and changed:
+                print('frontend files changed, running UI verification...')
+                try:
+                    success, feedback = check_frontend(
+                        prjdir=state['prjdir'],
+                        goal=state.get('goal', ''),
+                        spec=state.get('spec', '')
+                    )
+                    if success:
+                        frontend_result = "UI verification PASSED"
+                    else:
+                        frontend_result = f"UI verification ISSUES:\n{feedback[:500]}"
+                except Exception as e:
+                    frontend_result = f"UI verification error: {e}"
+            
+            action += f'\nACTION:\nexecuted code:\n{code}\nresult:\n{console_out}\nTree-sitter:\n{tree_result}\nPyright:\n{pyright_result}\nFrontend:\n{frontend_result}\n'
             logging.debug(action)
             return {
-                'actions': state['actions'] + [action],
-                'tree': make_tree(state['prjdir'])
-            }
+                'actions': state['actions'] + [action], 
+                'tree': repo_structure if 'repo_structure' in dir() else make_tree(state['prjdir']),
+                'frontend_hash': new_frontend_hash
+                }
         msglist.append(AIMessage(code))
         error_report = HumanMessage(
             'there was some errors in your code, here is execution logs:\n' + console_out)
@@ -261,8 +337,38 @@ def commit(state: AgentState):
         logging.error('agent failed to commit, msglist=' + str(msglist))
 
 
-def get_initial_state(goal: str, spec: str, prjdir: str,
-                      max_steps: int, patience=5, action_memory_size=5):
+def frontend_verify(state: AgentState):
+    prjdir = state['prjdir']
+    frontend_path = Path(prjdir) / 'frontend'
+    
+    if not frontend_path.exists():
+        print('frontend_verify... no frontend directory, ending')
+        return {'decision': END}
+    
+    print('frontend_verify... running Playwright + LLM Vision analysis')
+    
+    try:
+        success, feedback = check_frontend(
+            prjdir=prjdir,
+            goal=state.get('goal', ''),
+            spec=state.get('spec', '')
+        )
+        
+        if success:
+            print('frontend_verify... PASSED, ending')
+            return {'decision': END}
+        else:
+            print('frontend_verify... ISSUES FOUND, returning to think')
+            return {
+                'decision': 'think',
+                'wakeup': f'\n[FRONTEND VERIFY - ISSUES FOUND]\n{feedback}\n\nYou must fix these UI issues before finishing.\n'
+            }
+    except Exception as e:
+        print(f'frontend_verify error: {e}')
+        return {'decision': END}
+
+
+def get_initial_state(goal: str, spec: str, prjdir:str, max_steps: int, patience=5, action_memory_size=5):
     return AgentState({
         'action_memory_size': action_memory_size,
         'actions': [],
@@ -277,7 +383,8 @@ def get_initial_state(goal: str, spec: str, prjdir: str,
         'spec': spec,
         'thoughts': [],
         'wakeup': '',
-        'tree': ''
+        'tree': '',
+        'frontend_hash': ''
     })
 
 
