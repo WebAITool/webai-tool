@@ -159,7 +159,18 @@ def extract_code(text: str) -> str:
     return text.strip()
 
 
-FRONTEND_EXTENSIONS = {'.vue', '.jsx', '.tsx', '.css', '.scss', '.sass', '.less', '.html', '.js', '.ts'}
+FRONTEND_EXTENSIONS = {
+    '.vue',
+    '.jsx',
+    '.tsx',
+    '.css',
+    '.scss',
+    '.sass',
+    '.less',
+    '.html',
+    '.js',
+    '.ts'}
+
 
 def compute_frontend_hash(prjdir: str) -> str:
     frontend_path = Path(prjdir) / 'frontend'
@@ -167,10 +178,10 @@ def compute_frontend_hash(prjdir: str) -> str:
         frontend_path = Path(prjdir) / 'src'
     if not frontend_path.exists():
         return ""
-    
+
     hasher = hashlib.md5()
     file_count = 0
-    
+
     for ext in FRONTEND_EXTENSIONS:
         for filepath in frontend_path.rglob(f'*{ext}'):
             if filepath.is_file():
@@ -181,10 +192,10 @@ def compute_frontend_hash(prjdir: str) -> str:
                     file_count += 1
                 except Exception:
                     pass
-    
+
     if file_count == 0:
         return ""
-    
+
     return hasher.hexdigest()
 
 
@@ -228,17 +239,18 @@ def code_action(state: AgentState):
                 tree_result = repo_structure[:1000]
             except Exception as e:
                 tree_result = f"Tree-sitter error: {e}"
-            
+
             pyright_result = run_pyright()
-            
+
             frontend_result = ""
             new_frontend_hash = ""
             frontend_path = Path(state['prjdir']) / 'frontend'
             if not frontend_path.exists():
                 frontend_path = Path(state['prjdir']) / 'src'
             old_hash = state.get('frontend_hash', '')
-            changed, new_frontend_hash = frontend_changed(state['prjdir'], old_hash)
-            
+            changed, new_frontend_hash = frontend_changed(
+                state['prjdir'], old_hash)
+
             if frontend_path.exists() and changed:
                 print('frontend files changed, running UI verification...')
                 try:
@@ -253,14 +265,14 @@ def code_action(state: AgentState):
                         frontend_result = f"UI verification ISSUES:\n{feedback[:500]}"
                 except Exception as e:
                     frontend_result = f"UI verification error: {e}"
-            
+
             action += f'\nACTION:\nexecuted code:\n{code}\nresult:\n{console_out}\nTree-sitter:\n{tree_result}\nPyright:\n{pyright_result}\nFrontend:\n{frontend_result}\n'
             logging.debug(action)
             return {
-                'actions': state['actions'] + [action], 
+                'actions': state['actions'] + [action],
                 'tree': repo_structure if 'repo_structure' in dir() else make_tree(state['prjdir']),
                 'frontend_hash': new_frontend_hash
-                }
+            }
         msglist.append(AIMessage(code))
         error_report = HumanMessage(
             'there was some errors in your code, here is execution logs:\n' + console_out)
@@ -340,20 +352,20 @@ def commit(state: AgentState):
 def frontend_verify(state: AgentState):
     prjdir = state['prjdir']
     frontend_path = Path(prjdir) / 'frontend'
-    
+
     if not frontend_path.exists():
         print('frontend_verify... no frontend directory, ending')
         return {'decision': END}
-    
+
     print('frontend_verify... running Playwright + LLM Vision analysis')
-    
+
     try:
         success, feedback = check_frontend(
             prjdir=prjdir,
             goal=state.get('goal', ''),
             spec=state.get('spec', '')
         )
-        
+
         if success:
             print('frontend_verify... PASSED, ending')
             return {'decision': END}
@@ -368,7 +380,8 @@ def frontend_verify(state: AgentState):
         return {'decision': END}
 
 
-def get_initial_state(goal: str, spec: str, prjdir:str, max_steps: int, patience=5, action_memory_size=5):
+def get_initial_state(goal: str, spec: str, prjdir: str,
+                      max_steps: int, patience=5, action_memory_size=5):
     return AgentState({
         'action_memory_size': action_memory_size,
         'actions': [],
@@ -383,7 +396,7 @@ def get_initial_state(goal: str, spec: str, prjdir:str, max_steps: int, patience
         'spec': spec,
         'thoughts': [],
         'wakeup': '',
-        'tree': '',
+        'tree': make_tree(prjdir),
         'frontend_hash': ''
     })
 

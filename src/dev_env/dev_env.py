@@ -10,7 +10,7 @@ from .git import init_git
 PYRIGHT_CONFIG = """{
     "venvPath": ".",
     "venv": ".venv",
-    "typeCheckingMode": "off"
+    "typeCheckingMode": "basic"
 }"""
 
 VENV_PATH: Path

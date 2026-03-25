@@ -52,7 +52,6 @@ def init_git(prjdir: Path, commit_branch: str) -> None:
         _REPO = git.Repo.init(str(prjdir))
 
     _INDEX = _REPO.index
-    _INDEX.commit('init', author=_AGENT_ACTOR, committer=_AGENT_ACTOR)
 
     gitignore = (prjdir / '.gitignore')
     if not gitignore.exists():
@@ -62,6 +61,13 @@ def init_git(prjdir: Path, commit_branch: str) -> None:
     if commit_branch in _REPO.branches:
         _DEV_BRANCH = _REPO.branches[commit_branch]
     else:
+        has_commits = True
+        try:
+            next(_REPO.iter_commits())
+        except StopIteration:
+            has_commits = False
+        if not has_commits:
+            _INDEX.commit('init', author=_AGENT_ACTOR, committer=_AGENT_ACTOR)
         _DEV_BRANCH = _REPO.create_head(commit_branch)
 
     _DEV_BRANCH.checkout()
