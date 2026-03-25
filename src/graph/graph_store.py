@@ -53,6 +53,22 @@ class GraphStore:
 
         return g
 
+    def get_stale_files(self, current_files: dict[str, float]) -> set[str]:
+        """Return files whose mtime changed, were added, or were removed."""
+        try:
+            cached_files: dict[str, float] = self._read("files.json")
+        except (FileNotFoundError, json.JSONDecodeError):
+            return set(current_files.keys())
+
+        stale: set[str] = set()
+        for path, mtime in current_files.items():
+            if path not in cached_files or cached_files[path] != mtime:
+                stale.add(path)
+        for path in cached_files:
+            if path not in current_files:
+                stale.add(path)
+        return stale
+
     def is_stale(self, current_files: dict[str, float]) -> bool:
         try:
             cached_files: dict[str, float] = self._read("files.json")
