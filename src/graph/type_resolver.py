@@ -5,7 +5,7 @@ from __future__ import annotations
 from graph.models import TypeBinding
 
 
-def extract_type_bindings(filepath: str, lang: str) -> list[TypeBinding]:
+def extract_type_bindings(filepath: str, lang: str, source: bytes | None = None) -> list[TypeBinding]:
     """Extract variable-to-type bindings from 4 static AST patterns."""
     from tree_sitter import Query, QueryCursor
     from tree_sitter_language_pack import get_language, get_parser
@@ -14,11 +14,12 @@ def extract_type_bindings(filepath: str, lang: str) -> list[TypeBinding]:
     if query_specs is None:
         return []
 
-    try:
-        with open(filepath, "rb") as f:
-            source = f.read()
-    except OSError:
-        return []
+    if source is None:
+        try:
+            with open(filepath, "rb") as f:
+                source = f.read()
+        except OSError:
+            return []
 
     try:
         parser = get_parser(lang)
@@ -145,6 +146,18 @@ _TS_BINDINGS: list[tuple[str, str]] = [
   name: (identifier) @binding.var
   type: (type_annotation (type_identifier) @binding.type))
 """, "annotation"),
+    # function create(): UserService { ... }
+    ("""
+(function_declaration
+  name: (identifier) @binding.var
+  return_type: (type_annotation (type_identifier) @binding.type))
+""", "return-type"),
+    # class Foo { create(): UserService { ... } }
+    ("""
+(method_definition
+  name: (property_identifier) @binding.var
+  return_type: (type_annotation (type_identifier) @binding.type))
+""", "return-type"),
 ]
 
 _BINDING_QUERIES: dict[str, list[tuple[str, str]]] = {

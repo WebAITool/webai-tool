@@ -56,3 +56,31 @@ def test_ts_type_annotation():
                    for b in bindings)
     finally:
         os.unlink(path)
+
+
+def test_ts_return_type_function():
+    """function create(): UserService {} → TypeBinding."""
+    code = "function create(): UserService { return new UserService() }\n"
+    path = _tmp(".ts", code)
+    try:
+        bindings = extract_type_bindings(path, "typescript")
+        rt = [b for b in bindings if b.source == "return-type"]
+        assert len(rt) >= 1
+        assert rt[0].var_name == "create"
+        assert rt[0].resolved_type == "UserService"
+    finally:
+        os.unlink(path)
+
+
+def test_ts_return_type_method():
+    """class Foo { create(): UserService {} } → TypeBinding."""
+    code = "class Foo {\n  create(): UserService { return new UserService() }\n}\n"
+    path = _tmp(".ts", code)
+    try:
+        bindings = extract_type_bindings(path, "typescript")
+        rt = [b for b in bindings if b.source == "return-type"]
+        assert len(rt) >= 1
+        assert rt[0].var_name == "create"
+        assert rt[0].resolved_type == "UserService"
+    finally:
+        os.unlink(path)
