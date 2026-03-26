@@ -13,13 +13,14 @@ dotenv.load_dotenv()
 
 
 class FrontendChecker:
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(self, api_key: Optional[str] = None, headless: bool = True):
         self.api_key = api_key or os.getenv("API_KEY")
         self.client = OpenAI(
             base_url="https://polza.ai/api/v1",
             api_key=self.api_key
         )
         self.dev_process = None
+        self.headless = headless
 
     def discover_routes(self, frontend_path: Path) -> List[str]:
         routes = ["/"]
@@ -55,7 +56,7 @@ class FrontendChecker:
             routes = ["/"]
             
             with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
+                browser = p.chromium.launch(headless=self.headless)
                 page = browser.new_page()
                 
                 page.goto(base_url, wait_until="networkidle")
@@ -119,7 +120,7 @@ class FrontendChecker:
             from playwright.sync_api import sync_playwright
 
             with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
+                browser = p.chromium.launch(headless=self.headless)
                 page = browser.new_page()
                 page.set_default_timeout(timeout)
 
@@ -246,7 +247,8 @@ Provide actionable feedback."""
 def check_frontend(
     prjdir: str,
     goal: str = "",
-    spec: str = ""
+    spec: str = "",
+    headless: bool = True
 ) -> Tuple[bool, str]:
     prjdir_path = Path(prjdir)
     
@@ -260,5 +262,5 @@ def check_frontend(
     if not (project_root / "package.json").exists():
         return True, "No package.json found"
 
-    checker = FrontendChecker()
+    checker = FrontendChecker(headless=headless)
     return checker.verify_frontend(project_root, goal, spec)

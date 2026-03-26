@@ -172,13 +172,30 @@ FRONTEND_EXTENSIONS = {
 def find_frontend_root(prjdir: str) -> Optional[Path]:
     prjdir_path = Path(prjdir)
     
+    if not prjdir_path.exists():
+        return None
+    
     for candidate in [prjdir_path / 'frontend', prjdir_path / 'src']:
         if candidate.exists() and (candidate / 'package.json').exists():
             return candidate
     
-    for parent in prjdir_path.parents:
-        if (parent / 'package.json').exists():
-            return parent
+    for pkg in prjdir_path.rglob('package.json'):
+        pkg_dir = pkg.parent
+        pkg_dir_name = pkg_dir.name.lower()
+        
+        if pkg_dir_name in ['frontend', 'src', 'web', 'client', 'app']:
+            skip_dirs = ['node_modules', 'dist', 'build', '.git', 'venv', '__pycache__']
+            if not any(skip in str(pkg_dir) for skip in skip_dirs):
+                return pkg_dir
+        
+        if (pkg_dir / 'src').exists() and (pkg_dir / 'vite.config.js').exists():
+            return pkg_dir
+        
+        for indicator in ['vite.config.js', 'vue.config.js', 'nuxt.config.js', 'next.config.js', 'svelte.config.js']:
+            if (pkg_dir / indicator).exists():
+                skip_dirs = ['node_modules', 'dist', 'build', '.git', 'venv', '__pycache__']
+                if not any(skip in str(pkg_dir) for skip in skip_dirs):
+                    return pkg_dir
     
     if (prjdir_path / 'package.json').exists():
         return prjdir_path
@@ -270,10 +287,12 @@ def code_action(state: AgentState):
             if frontend_path and changed:
                 print(f'frontend files changed in {frontend_path}, running UI verification...')
                 try:
+                    headless = os.getenv('PLAYWRIGHT_HEADLESS', 'true').lower() != 'false'
                     success, feedback = check_frontend(
                         prjdir=state['prjdir'],
                         goal=state.get('goal', ''),
-                        spec=state.get('spec', '')
+                        spec=state.get('spec', ''),
+                        headless=headless
                     )
                     frontend_result = f"UI verification:\n{feedback}"
                 except Exception as e:
@@ -306,10 +325,12 @@ def frontend_verify(state: AgentState):
     print(f'frontend_verify... running Playwright + LLM Vision analysis on {frontend_path}')
     
     try:
+        headless = os.getenv('PLAYWRIGHT_HEADLESS', 'true').lower() != 'false'
         success, feedback = check_frontend(
             prjdir=prjdir,
             goal=state.get('goal', ''),
-            spec=state.get('spec', '')
+            spec=state.get('spec', ''),
+            headless=headless
         )
         
         print('frontend_verify... analysis complete, returning to think')

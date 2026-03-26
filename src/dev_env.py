@@ -20,7 +20,7 @@ def prepare_dev_env(prjdir: Path) -> None:
     BACKEND_PATH = prjdir / 'backend'
 
     if not BACKEND_PATH.exists():
-        BACKEND_PATH.mkdir(exist_ok=True)
+        BACKEND_PATH.mkdir(parents=True, exist_ok=True)
 
     global VENV_PATH
     VENV_PATH = BACKEND_PATH / '.venv'

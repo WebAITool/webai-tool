@@ -39,12 +39,12 @@ if __name__ == '__main__':
 
 
 
-from smolagents.models import LiteLLMModel
+# from smolagents.models import LiteLLMModel
 
-model = LiteLLMModel(
-    model="openai/qwen/qwen3-235b-a22b-2507",   
-    api_base="https://api.polza.ai/api/v1",
-    api_key=api_key,
-    temperature=0.1,
-    write_file_allowed=True
-)
+# model = LiteLLMModel(
+#     model="openai/qwen/qwen3-235b-a22b-2507",   
+#     api_base="https://api.polza.ai/api/v1",
+#     api_key=api_key,
+#     temperature=0.1,
+#     write_file_allowed=True
+# )
