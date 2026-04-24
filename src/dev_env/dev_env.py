@@ -2,6 +2,7 @@ from dataclasses import dataclass
 import logging
 from pathlib import Path
 import sys
+from typing import Tuple
 import venv
 import subprocess
 from .git import init_git
@@ -48,7 +49,7 @@ def prepare_dev_env(config: DevEnvConfig) -> None:
         init_git(prjdir, config.commit_branch)
 
 
-def run_pyright() -> str:
+def run_pyright() -> Tuple[bool, str]:
     python_path = VENV_PATH / 'bin' / 'python'
     requirements_path = BACKEND_PATH / 'requirements.txt'
     if requirements_path.exists():
@@ -59,5 +60,6 @@ def run_pyright() -> str:
         if pip_result.returncode != 0:
             logging.debug("pip was executed: " + str(pip_result))
 
-    return subprocess.run([sys.executable, '-m', 'pyright', '-p', str(
-        BACKEND_PATH)], text=True, capture_output=True).stdout
+    result = subprocess.run([sys.executable, '-m', 'pyright', '-p', str(
+        BACKEND_PATH)], text=True, capture_output=True)
+    return result.returncode == 0, result.stdout

@@ -38,7 +38,7 @@ if __name__ == '__main__':
                           default='dev')
     # old goal is f'implement project by specification, work in {PRJ_DIR} we
     # are on windows'
-    argparse.add_argument("goal", help='Agent goal')
+    argparse.add_argument("taskspec", help='Path to task specification')
 
     args = argparse.parse_args()
 
@@ -73,9 +73,13 @@ if __name__ == '__main__':
             args.commit_branch,
             args.enable_commits))
 
+    taskspec: str
+    with open(args.taskspec, 'r') as file:
+        taskspec = file.read()
+
     config = {"recursion_limit": 250}
     impl_state = get_initial_state(
-        goal=args.goal,
+        goal=taskspec,
         spec=doc,
         prjdir=str(PRJ_DIR),
         max_steps=50,

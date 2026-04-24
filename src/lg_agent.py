@@ -234,13 +234,13 @@ def code_action(state: AgentState):
         print('code executing...')
         console_out = repl.run(code + f'\nprint(\'{sentinel}\')')
         if sentinel in console_out:
-            try:
-                repo_structure = get_repo_structure(state['prjdir'])
-                tree_result = repo_structure[:1000]
-            except Exception as e:
-                tree_result = f"Tree-sitter error: {e}"
+            # try:
+            #    repo_structure = get_repo_structure(state['prjdir'])
+            #    tree_result = repo_structure[:1000]
+            # except Exception as e:
+            #    tree_result = f"Tree-sitter error: {e}"
 
-            pyright_result = run_pyright()
+            _, pyright_result = run_pyright()
 
             frontend_result = ""
             new_frontend_hash = ""
@@ -266,11 +266,11 @@ def code_action(state: AgentState):
                 except Exception as e:
                     frontend_result = f"UI verification error: {e}"
 
-            action += f'\nACTION:\nexecuted code:\n{code}\nresult:\n{console_out}\nTree-sitter:\n{tree_result}\nPyright:\n{pyright_result}\nFrontend:\n{frontend_result}\n'
+            action += f'\nACTION:\nexecuted code:\n{code}\nresult:\n{console_out}\nPyright:\n{pyright_result}\nFrontend:\n{frontend_result}\n'
             logging.debug(action)
             return {
                 'actions': state['actions'] + [action],
-                'tree': repo_structure if 'repo_structure' in dir() else make_tree(state['prjdir']),
+                'tree': make_tree(state['prjdir']),
                 'frontend_hash': new_frontend_hash
             }
         msglist.append(AIMessage(code))
@@ -285,7 +285,7 @@ def code_action(state: AgentState):
 
 def commit(state: AgentState):
     sysmsg = SystemMessagePromptTemplate.from_template(
-        'you are code agent of the agent system')
+        'you are commit agent of the agent system')
     usrmsg = HumanMessagePromptTemplate.from_template(
         'look at the plan from the thinker agent:\n{plan}\nend of plan.'
         'list of your previous actions is\n{actions}\nend of the list.'
@@ -347,6 +347,8 @@ def commit(state: AgentState):
                 msglist.append(HumanMessage(prompt))
 
         logging.error('agent failed to commit, msglist=' + str(msglist))
+
+    return {}
 
 
 def frontend_verify(state: AgentState):
