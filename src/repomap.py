@@ -33,6 +33,7 @@ MAX_OUTPUT_LINES = 5000  # truncate output to prevent context window overflow
 
 IGNORED_DIRS = {
     ".git",
+    ".repo-graph",
     "__pycache__",
     "node_modules",
     "dist",
@@ -374,6 +375,25 @@ def _should_include(name: str, is_dir: bool) -> bool:
     return ext.lower() not in IGNORED_EXTENSIONS
 
 
+def _ensure_repo_graph_gitignore(root_path: str) -> None:
+    """Make generated repo graph caches ignore their own contents."""
+    repo_graph_dir = os.path.join(root_path, ".repo-graph")
+    if not os.path.isdir(repo_graph_dir):
+        return
+
+    gitignore_path = os.path.join(repo_graph_dir, ".gitignore")
+    desired = "*\n"
+    try:
+        if os.path.exists(gitignore_path):
+            with open(gitignore_path, "r", encoding="utf-8") as f:
+                if f.read() == desired:
+                    return
+        with open(gitignore_path, "w", encoding="utf-8") as f:
+            f.write(desired)
+    except OSError:
+        return
+
+
 def _parse_file(filepath: str) -> list[Tag]:
     """Parse a file and return Tags, selecting parser by extension."""
     _, ext = os.path.splitext(filepath)
@@ -435,6 +455,8 @@ class RepomapGenerator:
         root_path = os.path.abspath(root_path)
         if not os.path.isdir(root_path):
             return f"Error: '{root_path}' is not a valid directory."
+
+        _ensure_repo_graph_gitignore(root_path)
 
         lines: list[str] = []
         all_tags: list[Tag] = []
