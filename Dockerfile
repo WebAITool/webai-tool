@@ -1,0 +1,34 @@
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app/src
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+
+WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        git \
+        nodejs \
+        npm \
+        tree \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY pyproject.toml uv.lock README.md ./
+COPY src ./src
+
+RUN python -m pip install --no-cache-dir --upgrade pip \
+    && python -m pip install --no-cache-dir uv \
+    && uv sync --frozen --no-dev \
+    && .venv/bin/python -m playwright install --with-deps chromium
+
+RUN useradd --create-home --uid 10001 appuser \
+    && mkdir -p /workspace /ms-playwright \
+    && chown -R appuser:appuser /app /workspace /ms-playwright
+
+USER appuser
+WORKDIR /workspace
+
+ENTRYPOINT ["/app/.venv/bin/python", "/app/src/main.py"]
+CMD ["--help"]

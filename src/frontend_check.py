@@ -1,22 +1,19 @@
-import os
 import subprocess
 import time
 import base64
 import re
 from pathlib import Path
 from typing import Optional, Tuple, List
-import dotenv
 
 from openai import OpenAI
-
-dotenv.load_dotenv()
+from llm_config import API_KEY, FRONTEND_VISION_MODEL, LLM_API_BASE_URL
 
 
 class FrontendChecker:
     def __init__(self, api_key: Optional[str] = None):
-        self.api_key = api_key or os.getenv("API_KEY")
+        self.api_key = api_key or API_KEY
         self.client = OpenAI(
-            base_url="https://polza.ai/api/v1",
+            base_url=LLM_API_BASE_URL,
             api_key=self.api_key
         )
         self.dev_process = None
@@ -172,7 +169,7 @@ Analyze:
 Provide actionable feedback."""
 
             response = self.client.chat.completions.create(
-                model="qwen/qwen3-vl-8b-thinking",
+                model=FRONTEND_VISION_MODEL,
                 messages=[
                     {
                         "role": "user",
