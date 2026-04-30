@@ -1,13 +1,14 @@
 from pathlib import Path
 
 from dev_env import prepare_dev_env, DevEnvConfig
-from makesrs_prod import makesrs, make_tree
 from lg_agent import create_agent
 from lg_agent import get_initial_state
-from prompts import *
+from makesrs_prod import makesrs
+from prompts import planner
 import re
 from gener import generate
 from logs import LOG_FILE
+from llm_config import API_KEY
 import argparse
 import logging
 
@@ -41,6 +42,10 @@ if __name__ == '__main__':
     argparse.add_argument("taskspec", help='Path to task specification')
 
     args = argparse.parse_args()
+
+    if not API_KEY:
+        raise SystemExit(
+            "API_KEY is required. Set it in the environment or in a local .env file.")
 
     PRJ_DIR = Path(args.prjdir)
 

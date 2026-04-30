@@ -1,6 +1,4 @@
-import os
 import logging
-import dotenv
 import hashlib
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import (
@@ -13,8 +11,6 @@ from langchain_core.exceptions import OutputParserException
 
 from dev_env import git, run_pyright
 from makesrs_prod import make_tree
-from repomap import get_repo_structure
-from dev_env import run_pyright, prepare_dev_env
 from frontend_check import check_frontend
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.output_parsers import JsonOutputParser, StrOutputParser
@@ -24,14 +20,14 @@ from langchain_experimental.utilities import PythonREPL
 from langchain_core.runnables import RunnableLambda
 from difflib import SequenceMatcher
 from pathlib import Path
+from llm_config import API_KEY, LLM_API_BASE_URL, LLM_MODEL
 
-dotenv.load_dotenv()
 llm = ChatOpenAI(
     # model_name="qwen/qwen3-coder",
-    model_name="z-ai/glm-4.7",
-    base_url="https://api.polza.ai/api/v1",
+    model_name=LLM_MODEL,
+    base_url=LLM_API_BASE_URL,
     temperature=0.5,
-    api_key=os.getenv('API_KEY')
+    api_key=API_KEY,
 )
 
 
@@ -423,8 +419,9 @@ def create_agent(commits_enabled: bool):
     return graph.compile()
 
 
-def run_agent(goal, spec, max_steps=30):
-    initial_state = get_initial_state(goal, spec, max_steps=max_steps)
-    agent.invoke(initial_state)
+def run_agent(goal, spec, prjdir=".", max_steps=30):
+    initial_state = get_initial_state(
+        goal, spec, prjdir=prjdir, max_steps=max_steps)
+    create_agent(False).invoke(initial_state)
 
 # run_agent('built simple and nice betting web application in folder 4xbet')
