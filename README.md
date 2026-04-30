@@ -1,13 +1,13 @@
 # WebAI Tool
 
-WebAI Tool is a spec-driven agent for generating and modifying web projects with a Python backend and a Vue/JavaScript frontend. It works in two modes: use an existing project specification, or analyze a reference project to generate a specification before applying changes through an LLM-driven LangGraph workflow.
+WebAI Tool is a spec-driven agent for generating and modifying web projects with a Python backend and a Vue/JavaScript frontend. It can implement requested features from existing project documentation, or analyze a reference project to generate documentation first and then implement changes through an LLM-driven LangGraph workflow.
 
 The current release focuses on a command-line workflow for demonstrations and controlled experiments. The agent can execute generated Python code, run backend checks, inspect frontend output, and optionally commit generated changes inside the target project.
 
 ## Capabilities
 
-- Generate or modify a project from an existing specification file and a task specification.
-- Analyze a reference project, generate a specification from it, then apply a task specification to the target project.
+- Generate or modify a project by implementing features described in project documentation and task specifications.
+- Analyze a reference project, generate a specification from it, then implement requested changes in the target project.
 - Build a repository map for Python, JavaScript, TypeScript, TSX, and Vue files with tree-sitter queries.
 - Run Pyright checks for generated backend code.
 - Run frontend verification with Playwright screenshots and LLM vision feedback when frontend files change.
