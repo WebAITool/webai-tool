@@ -22,8 +22,8 @@ def generate(prompt):
         # model="meituan/longcat-flash-chat:free",
         # model="deepseek/deepseek-chat-v3.1",
         # model = "deepseek/deepseek-v3.1-terminus",
-        model = "qwen/qwen3-coder",
-        # model = "minimax/minimax-m2:free",
+        # model = "qwen/qwen3-coder",
+        model = "deepseek/deepseek-v4-flash",
         messages=[
             {
                 "role": "user",
