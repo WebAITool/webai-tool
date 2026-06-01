@@ -8,6 +8,7 @@ from typing import TypedDict, List
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
 from langgraph.graph import StateGraph, END
+from ui import ask
 
 dotenv.load_dotenv()
 
@@ -17,6 +18,7 @@ llm = ChatOpenAI(
     temperature=0.3,
     api_key=os.getenv('API_KEY')
 )
+
 
 class AgentState(TypedDict):
     goal: str
@@ -28,9 +30,33 @@ class AgentState(TypedDict):
     implementor_retries: int
     iterations: int
     max_steps: int
+    human_feedbacks: list[str]
 
-IGNORE_DIRS = {'.git', '__pycache__', 'node_modules', 'venv', 'env', '.venv', 'dist', 'build', '.pytest_cache'}
-IGNORE_EXTS = {'.pyc', '.pyo', '.pyd', '.so', '.dll', '.exe', '.jpg', '.png', '.gif', '.pdf', '.db', '.sqlite3'}
+
+IGNORE_DIRS = {
+    '.git',
+    '__pycache__',
+    'node_modules',
+    'venv',
+    'env',
+    '.venv',
+    'dist',
+    'build',
+    '.pytest_cache'}
+IGNORE_EXTS = {
+    '.pyc',
+    '.pyo',
+    '.pyd',
+    '.so',
+    '.dll',
+    '.exe',
+    '.jpg',
+    '.png',
+    '.gif',
+    '.pdf',
+    '.db',
+    '.sqlite3'}
+
 
 def extract_symbols(filepath):
     ext = os.path.splitext(filepath)[1].lower()
@@ -38,7 +64,7 @@ def extract_symbols(filepath):
     try:
         with open(filepath, 'r', encoding='utf-8') as f:
             content = f.read()
-        
+
         if ext == '.py':
             tree = ast.parse(content)
             for node in ast.walk(tree):
@@ -47,40 +73,54 @@ def extract_symbols(filepath):
                 elif isinstance(node, ast.FunctionDef):
                     symbols.append(f"def {node.name}")
         elif ext in {'.js', '.ts', '.vue'}:
-            class_matches = re.findall(r'^[\s]*class\s+([a-zA-Z0-9_]+)', content, re.MULTILINE)
-            func_matches = re.findall(r'^[\s]*(?:export\s+)?(?:async\s+)?function\s+([a-zA-Z0-9_]+)', content, re.MULTILINE)
-            const_func_matches = re.findall(r'^[\s]*(?:export\s+)?const\s+([a-zA-Z0-9_]+)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[a-zA-Z0-9_]+)\s*=>', content, re.MULTILINE)
-            
-            for m in class_matches: symbols.append(f"class {m}")
-            for m in func_matches: symbols.append(f"func {m}")
-            for m in const_func_matches: symbols.append(f"func {m}")
+            class_matches = re.findall(
+                r'^[\s]*class\s+([a-zA-Z0-9_]+)', content, re.MULTILINE)
+            func_matches = re.findall(
+                r'^[\s]*(?:export\s+)?(?:async\s+)?function\s+([a-zA-Z0-9_]+)',
+                content,
+                re.MULTILINE)
+            const_func_matches = re.findall(
+                r'^[\s]*(?:export\s+)?const\s+([a-zA-Z0-9_]+)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[a-zA-Z0-9_]+)\s*=>',
+                content,
+                re.MULTILINE)
+
+            for m in class_matches:
+                symbols.append(f"class {m}")
+            for m in func_matches:
+                symbols.append(f"func {m}")
+            for m in const_func_matches:
+                symbols.append(f"func {m}")
     except Exception:
         pass
-    
+
     return symbols
+
 
 def make_tree(prjpath):
     tree_str = ""
     for root, dirs, files in os.walk(prjpath):
-        dirs[:] = [d for d in dirs if d not in IGNORE_DIRS and not d.startswith('.')]
+        dirs[:] = [
+            d for d in dirs if d not in IGNORE_DIRS and not d.startswith('.')]
         level = root.replace(prjpath, '').count(os.sep)
         indent = ' ' * 4 * level
         basename = os.path.basename(root)
-        
+
         if basename:
             tree_str += f"{indent}{basename}/\n"
-        
+
         subindent = ' ' * 4 * (level + 1)
         for f in files:
-            if f.startswith('.') or os.path.splitext(f)[1].lower() in IGNORE_EXTS:
+            if f.startswith('.') or os.path.splitext(f)[
+                    1].lower() in IGNORE_EXTS:
                 continue
-            
+
             tree_str += f"{subindent}{f}\n"
             symbols = extract_symbols(os.path.join(root, f))
             for sym in symbols:
                 tree_str += f"{subindent}  - {sym}\n"
-                
+
     return tree_str.strip()
+
 
 def extract_code(text: str) -> str:
     if "```" in text:
@@ -90,18 +130,22 @@ def extract_code(text: str) -> str:
                 first_newline = block.find('\n')
                 if first_newline != -1:
                     return block[first_newline:].strip()
-                return block.replace("python", "", 1).replace("py", "", 1).strip()
+                return block.replace("python", "", 1).replace(
+                    "py", "", 1).strip()
     return text.strip()
+
 
 def format_history(history: List[str]) -> str:
     if not history:
         return "No actions taken yet."
     return "\n".join(history)
 
-def debug_llm_call(node_name: str, sys_prompt: str, user_prompt: str, response: str):
-    print(f"\n{'='*20} DEBUG: {node_name.upper()} {'='*20}")
+
+def debug_llm_call(node_name: str, sys_prompt: str,
+                   user_prompt: str, response: str):
+    print(f"\n{'=' * 20} DEBUG: {node_name.upper()} {'=' * 20}")
     print(f"--- SYSTEM PROMPT ---\n{sys_prompt}")
-    
+
     # Скрываем гигантское дерево файлов только для вывода в консоль
     debug_user_prompt = re.sub(
         r"(CURRENT FILE STRUCTURE & SYMBOLS:\n).*?(?=\n\n(ACTION HISTORY|LAST SCRIPT EXECUTION RESULT|TASK FROM ARCHITECT):)",
@@ -109,16 +153,18 @@ def debug_llm_call(node_name: str, sys_prompt: str, user_prompt: str, response: 
         user_prompt,
         flags=re.DOTALL
     )
-    
+
     print(f"--- USER PROMPT ---\n{debug_user_prompt}")
     print(f"--- RAW RESPONSE ---\n{response}")
-    print(f"{'='*60}\n")
+    print(f"{'=' * 60}\n")
+
 
 def thinker(state: AgentState):
     print("Thinker is analyzing the project...")
-    
+    print('HISTORY ' + '\n'.join(state['chat_history']))
+
     tree = make_tree(state['prjdir'])
-    
+
     sys_prompt = (
         "You are the Architect agent of an autonomous coding system. "
         "Your job is to analyze the current state of the project, read the user's goal, "
@@ -131,7 +177,7 @@ def thinker(state: AgentState):
         "5. YOU ARE BLIND to file contents by default. You can instruct the Implementor to write a script that reads and prints the exact contents of that file to the console, so you can see it and decide what to do next.\n"
         "6. If you are absolutely sure the user's goal is FULLY ACHIEVED and NO MORE ACTIONS are needed, output ONLY the exact string: [DONE]"
     )
-    
+
     last_result = ""
     if state['chat_history']:
         last_result = f"LAST SCRIPT EXECUTION RESULT:\n{state['chat_history'][-1]}\n\n"
@@ -144,6 +190,9 @@ def thinker(state: AgentState):
         f"PROJECT GOAL:\n{state['goal']}\n\n"
         f"CURRENT FILE STRUCTURE & SYMBOLS:\n{tree}\n\n"
         f"ACTION HISTORY:\n{history_text}\n\n"
+        f"LIST OF FEEDBACKS FROM USER:\n{
+            '\n'.join(
+                state['human_feedbacks'])}\nEND OF LIST"
         f"{last_result}"
         "Based on the history, last execution result, and current structure, what is the exact next step? "
         "If the goal is fully completed, reply with [DONE]."
@@ -153,12 +202,12 @@ def thinker(state: AgentState):
         SystemMessage(content=sys_prompt),
         HumanMessage(content=user_prompt)
     ]
-    
+
     response = llm.invoke(messages)
     plan = response.content.strip()
-    
+
     debug_llm_call("Thinker", sys_prompt, user_prompt, plan)
-    
+
     return {
         "current_plan": plan,
         "iterations": state["iterations"] + 1,
@@ -166,9 +215,10 @@ def thinker(state: AgentState):
         "last_error": ""
     }
 
+
 def verify_completion(state: AgentState):
     print("Verifying completion with Architect...")
-    
+
     sys_prompt = "You are the Architect agent."
     user_prompt = (
         f"PROJECT GOAL:\n{state['goal']}\n\n"
@@ -177,13 +227,16 @@ def verify_completion(state: AgentState):
         "Review the action history. Have the required changes been successfully applied to the codebase? "
         "Reply EXACTLY with 'YES' to confirm completion and stop the agent, or 'NO' if a critical step was missed."
     )
-    
-    messages = [SystemMessage(content=sys_prompt), HumanMessage(content=user_prompt)]
+
+    messages = [
+        SystemMessage(
+            content=sys_prompt), HumanMessage(
+            content=user_prompt)]
     response = llm.invoke(messages)
     answer = response.content.strip()
-    
+
     debug_llm_call("Verify Completion", sys_prompt, user_prompt, answer)
-    
+
     answer_upper = answer.upper()
     if "YES" in answer_upper:
         return {"current_plan": "[CONFIRMED_DONE]"}
@@ -193,11 +246,15 @@ def verify_completion(state: AgentState):
             "chat_history": state["chat_history"] + ["Architect tried to finish, but realized the goal is not fully achieved yet."]
         }
 
+
 def implementor(state: AgentState):
-    print(f"Implementor is writing code (Attempt {state['implementor_retries'] + 1})...")
-    
+    print(
+        f"Implementor is writing code (Attempt {
+            state['implementor_retries'] +
+            1})...")
+
     tree = make_tree(state['prjdir'])
-    
+
     sys_prompt = (
         "You are the Implementor agent. Your job is to write a Python script "
         "that executes the task requested by the Architect.\n\n"
@@ -210,7 +267,7 @@ def implementor(state: AgentState):
         "you MUST raise an exception (e.g., raise ValueError('Could not find class X')) or use sys.exit(1). "
         "Do not just print an error and return."
     )
-    
+
     last_result = ""
     if state['chat_history']:
         last_result = f"LAST SCRIPT EXECUTION RESULT:\n{state['chat_history'][-1]}\n\n"
@@ -232,35 +289,36 @@ def implementor(state: AgentState):
         SystemMessage(content=sys_prompt),
         HumanMessage(content=user_prompt)
     ]
-    
+
     response = llm.invoke(messages)
     code = extract_code(response.content)
-    
+
     debug_llm_call("Implementor", sys_prompt, user_prompt, response.content)
-    
+
     return {"current_code": code}
+
 
 def execute_code(state: AgentState):
     print("Executing generated code...")
     code = state['current_code']
     prjdir = state['prjdir']
-    
+
     temp_script_path = os.path.join(prjdir, '.agent_script.py')
-    
+
     try:
         with open(temp_script_path, 'w', encoding='utf-8') as f:
             f.write(code)
-            
+
         result = subprocess.run(
             ["python", ".agent_script.py"],
             cwd=prjdir,
             capture_output=True,
             text=True
         )
-        
+
         stdout = result.stdout.strip()
         stderr = result.stderr.strip()
-        
+
         if result.returncode == 0:
             print("Execution successful.")
             log_entry = f"Architect planned: '{state['current_plan'][:100]}...'\nResult: SUCCESS.\nConsole: {stdout[:10000]}"
@@ -275,7 +333,7 @@ def execute_code(state: AgentState):
                 error_report += f"\n--- STDOUT ---\n{stdout[:10000]}\n"
             if stderr:
                 error_report += f"\n--- STDERR (Traceback) ---\n{stderr[:10000]}\n"
-                
+
             print(f"Execution failed:\n{error_report}")
             return {
                 "last_error": error_report,
@@ -285,30 +343,52 @@ def execute_code(state: AgentState):
         if os.path.exists(temp_script_path):
             os.remove(temp_script_path)
 
+
 def route_after_thinker(state: AgentState):
     plan = state["current_plan"]
-    
+
     if "[DONE]" in plan:
         clean_plan = plan.replace("[DONE]", "").strip()
         if len(clean_plan) > 50:
-            print("Thinker included [DONE] inside a larger plan. Routing to Implementor instead of finishing.")
+            print(
+                "Thinker included [DONE] inside a larger plan. Routing to Implementor instead of finishing.")
             return "implementor"
         else:
             return "verify_completion"
-            
+
     if state["iterations"] >= state["max_steps"]:
         print("Max iterations reached. Stopping.")
         return END
-        
+
     return "implementor"
+
+
+def ask_user(state: AgentState):
+    print('Now you can give feedback to agent.\n'
+          'If you want to leave, give an empty answer or write /exit, /quit or /q')
+    user_feedback = ask()
+
+    return {
+        'human_feedbacks': state['human_feedbacks'] + [user_feedback]
+    }
+
+
+def route_after_answer(state: AgentState):
+    last = state['human_feedbacks'][-1]
+    if len(last) == 0 or last == '/exit' or last == '/quit' or last == '/q':
+        return END
+
+    return 'thinker'
+
 
 def route_after_verification(state: AgentState):
     if "[CONFIRMED_DONE]" in state["current_plan"]:
-        print("Goal confirmed as achieved! Exiting.")
-        return END
+        print("Goal confirmed as achieved.")
+        return "ask_user"
     else:
         print("Architect decided to continue working...")
         return "thinker"
+
 
 def route_after_execution(state: AgentState):
     if state.get("last_error"):
@@ -320,10 +400,12 @@ def route_after_execution(state: AgentState):
             fail_log = f"Architect planned: '{state['current_plan'][:100]}...'\nResult: FAILED completely after 3 attempts. Last error: {state['last_error'][:300]}"
             state["chat_history"].append(fail_log)
             return "thinker"
-    
+
     return "thinker"
 
-def get_initial_state(goal: str, prjdir: str, max_steps: int = 30) -> AgentState:
+
+def get_initial_state(goal: str, prjdir: str,
+                      max_steps: int = 30) -> AgentState:
     return {
         "goal": goal,
         "prjdir": prjdir,
@@ -333,22 +415,26 @@ def get_initial_state(goal: str, prjdir: str, max_steps: int = 30) -> AgentState
         "last_error": "",
         "implementor_retries": 0,
         "iterations": 0,
-        "max_steps": max_steps
+        "max_steps": max_steps,
+        "human_feedbacks": []
     }
+
 
 def create_agent():
     graph = StateGraph(state_schema=AgentState)
-    
+
     graph.add_node("thinker", thinker)
     graph.add_node("implementor", implementor)
     graph.add_node("execute_code", execute_code)
     graph.add_node("verify_completion", verify_completion)
-    
+    graph.add_node("ask_user", ask_user)
+
     graph.set_entry_point("thinker")
-    
+
     graph.add_conditional_edges("thinker", route_after_thinker)
     graph.add_conditional_edges("verify_completion", route_after_verification)
     graph.add_edge("implementor", "execute_code")
     graph.add_conditional_edges("execute_code", route_after_execution)
-    
+    graph.add_conditional_edges("ask_user", route_after_answer)
+
     return graph.compile()
