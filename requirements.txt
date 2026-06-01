@@ -11,3 +11,4 @@ pyright>=1.1.0
 smolagents>=1.0.0
 GitPython
 prompt_toolkit
+smolagents[litellm]
