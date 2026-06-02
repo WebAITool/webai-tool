@@ -25,32 +25,83 @@ def _load_lg_agent(monkeypatch):
     graph_module = types.ModuleType("langgraph.graph")
     graph_module.END = "__end__"
 
-    class StateGraph:
+    class RecordingStateGraph:
         def __init__(self, *args, **kwargs):
             self.args = args
             self.kwargs = kwargs
+            self.nodes = {}
+            self.entry_point = None
+            self.conditional_edges = []
+            self.edges = []
 
-        def add_node(self, *args, **kwargs):
-            pass
+        def add_node(self, name, node):
+            self.nodes[name] = node
 
-        def set_entry_point(self, *args, **kwargs):
-            pass
+        def set_entry_point(self, name):
+            self.entry_point = name
 
-        def add_conditional_edges(self, *args, **kwargs):
-            pass
+        def add_conditional_edges(self, source, path):
+            self.conditional_edges.append((source, path))
 
-        def add_edge(self, *args, **kwargs):
-            pass
+        def add_edge(self, source, target):
+            self.edges.append((source, target))
 
         def compile(self):
             return self
 
-    graph_module.StateGraph = StateGraph
+    graph_module.StateGraph = RecordingStateGraph
     monkeypatch.setitem(sys.modules, "langgraph", types.ModuleType("langgraph"))
     monkeypatch.setitem(sys.modules, "langgraph.graph", graph_module)
     import lg_agent
 
     return importlib.reload(lg_agent)
+
+
+def test_create_llm_uses_resolved_openai_compatible_config(monkeypatch):
+    lg_agent = _load_lg_agent(monkeypatch)
+
+    config = lg_agent.LLMConfig(
+        api_key="resolved-key",
+        api_base_url="https://resolved.example/v1",
+        model="provider/resolved-model",
+        frontend_vision_model="provider/vision",
+    )
+
+    llm = lg_agent.create_llm(config)
+
+    assert llm.kwargs == {
+        "model_name": "provider/resolved-model",
+        "base_url": "https://resolved.example/v1",
+        "temperature": 0.3,
+        "api_key": "resolved-key",
+    }
+
+
+def test_create_agent_wires_release_graph_nodes(monkeypatch):
+    lg_agent = _load_lg_agent(monkeypatch)
+
+    config = lg_agent.LLMConfig(
+        api_key="test-key",
+        api_base_url="https://example.test/v1",
+        model="provider/model",
+        frontend_vision_model="provider/vision",
+    )
+
+    graph = lg_agent.create_agent(llm_config=config)
+
+    assert set(graph.nodes) == {
+        "thinker",
+        "implementor",
+        "execute_code",
+        "verify_completion",
+    }
+    assert graph.entry_point == "thinker"
+    assert ("implementor", "execute_code") in graph.edges
+    assert [source for source, _ in graph.conditional_edges] == [
+        "thinker",
+        "execute_code",
+        "verify_completion",
+    ]
 
 
 def test_extract_code_selects_python_block(monkeypatch):
