@@ -16,16 +16,17 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml uv.lock README.md ./
-COPY src ./src
 
 RUN python -m pip install --no-cache-dir --upgrade pip \
     && python -m pip install --no-cache-dir uv \
-    && uv sync --frozen --no-dev \
+    && uv sync --frozen --no-dev --no-install-project \
     && .venv/bin/python -m playwright install --with-deps chromium
 
 RUN useradd --create-home --uid 10001 appuser \
     && mkdir -p /workspace /ms-playwright \
     && chown -R appuser:appuser /app /workspace /ms-playwright
+
+COPY --chown=appuser:appuser src ./src
 
 USER appuser
 WORKDIR /workspace

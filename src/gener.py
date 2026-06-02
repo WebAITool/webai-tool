@@ -1,17 +1,18 @@
 from openai import OpenAI
-import dotenv
-import os
 
-dotenv.load_dotenv()
-api_key = os.getenv('API_KEY')
+from llm_config import (
+    API_KEY,
+    LLM_API_BASE_URL,
+    LLM_MODEL,
+)
 
 
 def generate(prompt):
     # api_key = "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"
     client = OpenAI(
         # base_url="https://openrouter.ai/api/v1",
-        base_url="https://api.polza.ai/api/v1",
-        api_key=api_key,
+        base_url=LLM_API_BASE_URL,
+        api_key=API_KEY,
     )
 
 
@@ -22,8 +23,7 @@ def generate(prompt):
         # model="meituan/longcat-flash-chat:free",
         # model="deepseek/deepseek-chat-v3.1",
         # model = "deepseek/deepseek-v3.1-terminus",
-        # model = "qwen/qwen3-coder",
-        model = "deepseek/deepseek-v4-flash",
+        model=LLM_MODEL,
         messages=[
             {
                 "role": "user",
@@ -36,15 +36,3 @@ def generate(prompt):
 
 if __name__ == '__main__':
     print(generate('how many wheels has car'))
-
-
-
-from smolagents.models import LiteLLMModel
-
-model = LiteLLMModel(
-    model="openai/qwen/qwen3-235b-a22b-2507",   
-    api_base="https://api.polza.ai/api/v1",
-    api_key=api_key,
-    temperature=0.1,
-    write_file_allowed=True
-)

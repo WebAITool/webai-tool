@@ -46,7 +46,9 @@ uv run python -m playwright install chromium
 
 ## Configuration
 
-WebAI Tool uses an OpenAI-compatible chat completions provider. Create a local `.env` file in the repository root and add the provider settings:
+WebAI Tool uses an OpenAI-compatible chat completions provider. Create a local `.env` file in the repository root and add the provider settings.
+
+Polza.ai-style example:
 
 ```env
 API_KEY=your-api-key
@@ -55,10 +57,19 @@ LLM_MODEL=z-ai/glm-5.1
 FRONTEND_VISION_MODEL=qwen/qwen3-vl-8b-thinking
 ```
 
+OpenRouter example:
+
+```env
+API_KEY=your-openrouter-key
+LLM_API_BASE_URL=https://openrouter.ai/api/v1
+LLM_MODEL=openrouter/owl-alpha
+FRONTEND_VISION_MODEL=openrouter/owl-alpha
+```
+
 Configuration variables:
 
 - `API_KEY`: API key from your OpenAI-compatible provider account.
-- `LLM_API_BASE_URL`: provider API base URL. The default example uses Polza.ai.
+- `LLM_API_BASE_URL`: provider API base URL.
 - `LLM_MODEL`: main model used by the agent workflow.
 - `FRONTEND_VISION_MODEL`: vision-capable model used for screenshot-based frontend review.
 
@@ -142,6 +153,23 @@ docker run --rm \
 ```
 
 The image reads `API_KEY`, `LLM_API_BASE_URL`, `LLM_MODEL`, and `FRONTEND_VISION_MODEL` from the local `.env` file. `.env` must stay untracked and is excluded from the Docker build context. The image runs as a non-root user. On Linux, pass `--user "$(id -u):$(id -g)"` so files written under the mounted `/workspace` remain writable by the host user.
+
+If the container can resolve provider hostnames but cannot open outbound TCP connections, rerun with host networking:
+
+```bash
+docker run --rm \
+  --network=host \
+  --env-file .env \
+  --user "$(id -u):$(id -g)" \
+  -e HOME=/tmp \
+  -v "$PWD/demo-workspace:/workspace" \
+  webai-tool:release \
+  --prjdir /workspace \
+  --docpath /workspace/project-doc.md \
+  /workspace/task.txt
+```
+
+Host networking is a troubleshooting option for Docker network environments where the default bridge has no outbound provider access.
 
 See the GitHub Wiki page [Deployment](https://github.com/WebAITool/webai-tool/wiki/Deployment) for Docker deployment details.
 
