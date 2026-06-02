@@ -2,13 +2,20 @@ import os
 import ast
 import re
 import logging
+import warnings
 import dotenv
 import subprocess
 from typing import TypedDict, List
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
 from langgraph.graph import StateGraph, END
+from rich.console import Console
+from rich.panel import Panel
+from rich.syntax import Syntax
 from ui import ask
+
+warnings.filterwarnings("ignore", category=FutureWarning, module="smolagents")
+warnings.filterwarnings("ignore", category=UserWarning, module="langchain_core")
 
 dotenv.load_dotenv()
 
@@ -18,6 +25,8 @@ llm = ChatOpenAI(
     temperature=0.3,
     api_key=os.getenv('API_KEY')
 )
+
+console = Console()
 
 
 class AgentState(TypedDict):
@@ -141,10 +150,55 @@ def format_history(history: List[str]) -> str:
     return "\n".join(history)
 
 
+def get_git_diff(prjdir: str) -> str:
+    try:
+        result = subprocess.run(
+            ["git", "diff", "--no-color"],
+            cwd=prjdir,
+            capture_output=True,
+            text=True
+        )
+        diff = result.stdout.strip()
+        if diff:
+            return diff
+
+        result = subprocess.run(
+            ["git", "diff", "--stat"],
+            cwd=prjdir,
+            capture_output=True,
+            text=True
+        )
+        return result.stdout.strip()
+    except Exception:
+        return ""
+
+
+def commit_changes(prjdir: str, message: str = "Agent auto-commit") -> str:
+    try:
+        subprocess.run(["git", "add", "."], cwd=prjdir,
+                       capture_output=True, text=True)
+        result = subprocess.run(
+            ["git", "commit", "-m", message],
+            cwd=prjdir,
+            capture_output=True,
+            text=True
+        )
+        output = result.stdout.strip() or result.stderr.strip()
+        return output
+    except Exception as e:
+        return f"Commit failed: {e}"
+
+
 def debug_llm_call(node_name: str, sys_prompt: str,
                    user_prompt: str, response: str):
-    print(f"\n{'=' * 20} DEBUG: {node_name.upper()} {'=' * 20}")
-    print(f"--- SYSTEM PROMPT ---\n{sys_prompt}")
+    def safe_print(text: str):
+        try:
+            print(text)
+        except UnicodeEncodeError:
+            print(text.encode('cp1251', errors='replace').decode('cp1251', errors='replace'))
+
+    safe_print(f"\n{'=' * 20} DEBUG: {node_name.upper()} {'=' * 20}")
+    safe_print(f"--- SYSTEM PROMPT ---\n{sys_prompt}")
 
     # Скрываем гигантское дерево файлов только для вывода в консоль
     debug_user_prompt = re.sub(
@@ -154,14 +208,20 @@ def debug_llm_call(node_name: str, sys_prompt: str,
         flags=re.DOTALL
     )
 
-    print(f"--- USER PROMPT ---\n{debug_user_prompt}")
-    print(f"--- RAW RESPONSE ---\n{response}")
-    print(f"{'=' * 60}\n")
+    safe_print(f"--- USER PROMPT ---\n{debug_user_prompt}")
+    safe_print(f"--- RAW RESPONSE ---\n{response}")
+    safe_print(f"{'=' * 60}\n")
 
 
 def thinker(state: AgentState):
-    print("Thinker is analyzing the project...")
-    print('HISTORY ' + '\n'.join(state['chat_history']))
+    console.print(Panel(
+        "[bold cyan] Thinker is analyzing the project...[/bold cyan]",
+        border_style="cyan"
+    ))
+    if state['chat_history']:
+        console.print("[bold]Recent history:[/bold]")
+        for entry in state['chat_history'][-3:]:
+            console.print(f"  [dim]{entry[:200]}[/dim]")
 
     tree = make_tree(state['prjdir'])
 
@@ -203,7 +263,8 @@ def thinker(state: AgentState):
         HumanMessage(content=user_prompt)
     ]
 
-    response = llm.invoke(messages)
+    with console.status("[bold green] Consulting LLM...", spinner="dots"):
+        response = llm.invoke(messages)
     plan = response.content.strip()
 
     debug_llm_call("Thinker", sys_prompt, user_prompt, plan)
@@ -217,7 +278,10 @@ def thinker(state: AgentState):
 
 
 def verify_completion(state: AgentState):
-    print("Verifying completion with Architect...")
+    console.print(Panel(
+        "[bold cyan] Verifying completion with Architect...[/bold cyan]",
+        border_style="cyan"
+    ))
 
     sys_prompt = "You are the Architect agent."
     user_prompt = (
@@ -232,15 +296,26 @@ def verify_completion(state: AgentState):
         SystemMessage(
             content=sys_prompt), HumanMessage(
             content=user_prompt)]
-    response = llm.invoke(messages)
+    with console.status("[bold green] Verifying...", spinner="dots"):
+        response = llm.invoke(messages)
     answer = response.content.strip()
 
     debug_llm_call("Verify Completion", sys_prompt, user_prompt, answer)
 
     answer_upper = answer.upper()
     if "YES" in answer_upper:
+        diff = get_git_diff(state['prjdir'])
+        if diff:
+            console.print(Panel(
+                Syntax(diff, "diff", theme="monokai"),
+                title="[bold green]Final Git Diff[/bold green]",
+                border_style="green"
+            ))
+        else:
+            console.print("[bold green] Goal confirmed as achieved![/bold green]")
         return {"current_plan": "[CONFIRMED_DONE]"}
     else:
+        console.print("[bold yellow] Architect thinks more work is needed[/bold yellow]")
         return {
             "current_plan": "Previous completion check failed. Architect realized more work is needed.",
             "chat_history": state["chat_history"] + ["Architect tried to finish, but realized the goal is not fully achieved yet."]
@@ -248,10 +323,10 @@ def verify_completion(state: AgentState):
 
 
 def implementor(state: AgentState):
-    print(
-        f"Implementor is writing code (Attempt {
-            state['implementor_retries'] +
-            1})...")
+    console.print(Panel(
+        f"[bold cyan] Implementor is writing code[/bold cyan] [yellow](Attempt {state['implementor_retries'] + 1})[/yellow]",
+        border_style="cyan"
+    ))
 
     tree = make_tree(state['prjdir'])
 
@@ -290,7 +365,8 @@ def implementor(state: AgentState):
         HumanMessage(content=user_prompt)
     ]
 
-    response = llm.invoke(messages)
+    with console.status("[bold green] Generating implementation...", spinner="dots"):
+        response = llm.invoke(messages)
     code = extract_code(response.content)
 
     debug_llm_call("Implementor", sys_prompt, user_prompt, response.content)
@@ -299,28 +375,38 @@ def implementor(state: AgentState):
 
 
 def execute_code(state: AgentState):
-    print("Executing generated code...")
+    console.print(Panel(
+        "[bold cyan] Executing generated code...[/bold cyan]",
+        border_style="cyan"
+    ))
     code = state['current_code']
     prjdir = state['prjdir']
 
     temp_script_path = os.path.join(prjdir, '.agent_script.py')
 
     try:
-        with open(temp_script_path, 'w', encoding='utf-8') as f:
-            f.write(code)
+        with console.status("[bold green] Running code...[/bold green]", spinner="dots"):
+            with open(temp_script_path, 'w', encoding='utf-8') as f:
+                f.write(code)
 
-        result = subprocess.run(
-            ["python", ".agent_script.py"],
-            cwd=prjdir,
-            capture_output=True,
-            text=True
-        )
+            result = subprocess.run(
+                ["python", ".agent_script.py"],
+                cwd=prjdir,
+                capture_output=True,
+                text=True
+            )
 
         stdout = result.stdout.strip()
         stderr = result.stderr.strip()
 
         if result.returncode == 0:
-            print("Execution successful.")
+            console.print("[bold green] Execution successful[/bold green]")
+            if stdout:
+                console.print(Panel(
+                    stdout[:2000],
+                    title="[bold]Console Output[/bold]",
+                    border_style="green"
+                ))
             log_entry = f"Architect planned: '{state['current_plan'][:100]}...'\nResult: SUCCESS.\nConsole: {stdout[:10000]}"
             return {
                 "chat_history": state["chat_history"] + [log_entry],
@@ -334,7 +420,10 @@ def execute_code(state: AgentState):
             if stderr:
                 error_report += f"\n--- STDERR (Traceback) ---\n{stderr[:10000]}\n"
 
-            print(f"Execution failed:\n{error_report}")
+            console.print(Panel(
+                f"[bold red] Execution failed[/bold red]\n\n{error_report[:2000]}",
+                border_style="red"
+            ))
             return {
                 "last_error": error_report,
                 "implementor_retries": state["implementor_retries"] + 1
@@ -350,22 +439,37 @@ def route_after_thinker(state: AgentState):
     if "[DONE]" in plan:
         clean_plan = plan.replace("[DONE]", "").strip()
         if len(clean_plan) > 50:
-            print(
-                "Thinker included [DONE] inside a larger plan. Routing to Implementor instead of finishing.")
+            console.print("[bold yellow] Thinker included [DONE] inside larger plan. Routing to Implementor.[/bold yellow]")
             return "implementor"
         else:
             return "verify_completion"
 
     if state["iterations"] >= state["max_steps"]:
-        print("Max iterations reached. Stopping.")
+        console.print("[bold red] Max iterations reached. Stopping.[/bold red]")
         return END
 
     return "implementor"
 
 
 def ask_user(state: AgentState):
-    print('Now you can give feedback to agent.\n'
-          'If you want to leave, give an empty answer or write /exit, /quit or /q')
+    diff = get_git_diff(state['prjdir'])
+    if diff:
+        console.print(Panel(
+            Syntax(diff[:3000], "diff", theme="monokai"),
+            title="[bold yellow]Git Diff[/bold yellow]",
+            border_style="yellow"
+        ))
+    else:
+        console.print("[dim]No uncommitted changes detected.[/dim]")
+
+    console.print(Panel(
+        "[bold]Available commands:[/bold]\n"
+        "  [cyan]/commit[/cyan]   — Commit all changes to git\n"
+        "  [cyan]/exit[/cyan]     — Exit (or empty answer)\n"
+        "  [cyan]any text[/cyan]  — Send feedback to agent",
+        title="[bold yellow]User Feedback[/bold yellow]",
+        border_style="yellow"
+    ))
     user_feedback = ask()
 
     return {
@@ -378,25 +482,35 @@ def route_after_answer(state: AgentState):
     if len(last) == 0 or last == '/exit' or last == '/quit' or last == '/q':
         return END
 
+    if last == '/commit':
+        console.print("[bold cyan]Committing changes...[/bold cyan]")
+        result = commit_changes(state['prjdir'])
+        console.print(Panel(
+            result,
+            title="[bold]Commit Result[/bold]",
+            border_style="green"
+        ))
+        return 'ask_user'
+
     return 'thinker'
 
 
 def route_after_verification(state: AgentState):
     if "[CONFIRMED_DONE]" in state["current_plan"]:
-        print("Goal confirmed as achieved.")
+        console.print("[bold green] Goal confirmed as achieved! Showing changes...[/bold green]")
         return "ask_user"
     else:
-        print("Architect decided to continue working...")
+        console.print("[bold yellow] Architect decided to continue working...[/bold yellow]")
         return "thinker"
 
 
 def route_after_execution(state: AgentState):
     if state.get("last_error"):
         if state["implementor_retries"] < 1:
-            print("Implementor looping to fix error...")
+            console.print("[bold yellow] Implementor retrying to fix error...[/bold yellow]")
             return "implementor"
         else:
-            print("Implementor failed 3 times. Returning to Thinker for a new plan...")
+            console.print("[bold red] Implementor failed. Returning to Thinker for new plan...[/bold red]")
             fail_log = f"Architect planned: '{state['current_plan'][:100]}...'\nResult: FAILED completely after 3 attempts. Last error: {state['last_error'][:300]}"
             state["chat_history"].append(fail_log)
             return "thinker"
