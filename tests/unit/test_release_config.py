@@ -32,4 +32,3 @@ def test_validate_llm_config_names_missing_api_key(monkeypatch):
         assert "API_KEY is required" in str(exc)
     else:
         raise AssertionError("validate_llm_config should fail without API_KEY")
-

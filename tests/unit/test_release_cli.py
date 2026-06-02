@@ -54,4 +54,3 @@ def test_run_without_api_key_reports_clear_configuration_error(tmp_path):
     combined_output = result.stderr + result.stdout
     assert result.returncode != 0
     assert "API_KEY is required" in combined_output
-
