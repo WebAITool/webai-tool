@@ -138,6 +138,13 @@ Build the release image:
 docker build -t webai-tool:release .
 ```
 
+If Docker build containers cannot reach Debian or Playwright download hosts
+through the default bridge network, build with host networking:
+
+```bash
+docker build --network=host -t webai-tool:release .
+```
+
 Run the CLI in a container:
 
 ```bash
@@ -153,6 +160,11 @@ docker run --rm \
 ```
 
 The image reads `API_KEY`, `LLM_API_BASE_URL`, `LLM_MODEL`, and `FRONTEND_VISION_MODEL` from the local `.env` file. `.env` must stay untracked and is excluded from the Docker build context. The image runs as a non-root user. On Linux, pass `--user "$(id -u):$(id -g)"` so files written under the mounted `/workspace` remain writable by the host user.
+
+The default Docker release mode should mount only the target workspace. Do not
+mount the Docker socket, SSH agent, cloud credentials, full home directory, or
+other broad host paths unless you intentionally leave the default isolation
+boundary.
 
 If the container can resolve provider hostnames but cannot open outbound TCP connections, rerun with host networking:
 
