@@ -63,8 +63,17 @@ OpenRouter example:
 API_KEY=your-openrouter-key
 LLM_API_BASE_URL=https://openrouter.ai/api/v1
 LLM_MODEL=openrouter/owl-alpha
-FRONTEND_VISION_MODEL=openrouter/owl-alpha
+FRONTEND_VISION_MODEL=qwen/qwen3-vl-8b-instruct
 ```
+
+`openrouter/owl-alpha` is useful for free agent smoke tests, but it is a
+text-only OpenRouter model and should not be used for `FRONTEND_VISION_MODEL`.
+For frontend screenshot review, choose a model whose OpenRouter metadata lists
+`image` in `input_modalities`. `qwen/qwen3-vl-8b-instruct` is a low-cost
+Qwen vision-language example for this slot. Check the
+[OpenRouter Models](https://openrouter.ai/models) page and the
+[OpenRouter multimodal documentation](https://openrouter.ai/docs/guides/overview/multimodal/overview)
+before pinning a release configuration.
 
 Configuration variables:
 
@@ -130,13 +139,17 @@ Expected result:
 
 The official release Tutorial Benchmark is defined in the GitHub Wiki and uses a small frontend/backend events betting application scenario.
 
-## Docker
+## Docker Release
 
-Build the release image:
+During local release validation, build the image from this checkout:
 
 ```bash
 docker build -t webai-tool:release .
 ```
+
+When a project release publishes a prebuilt image through Docker Hub, GitHub
+Container Registry, or a GitHub release asset, use that published image tag
+instead of rebuilding locally.
 
 If Docker build containers cannot reach Debian or Playwright download hosts
 through the default bridge network, build with host networking:
@@ -145,7 +158,7 @@ through the default bridge network, build with host networking:
 docker build --network=host -t webai-tool:release .
 ```
 
-Run the CLI in a container:
+Run the release CLI container:
 
 ```bash
 docker run --rm \
