@@ -369,8 +369,6 @@ def implementor(state: AgentState):
         response = llm.invoke(messages)
     code = extract_code(response.content)
 
-    debug_llm_call("Implementor", sys_prompt, user_prompt, response.content)
-
     return {"current_code": code}
 
 
@@ -406,6 +404,19 @@ def execute_code(state: AgentState):
                     stdout[:2000],
                     title="[bold]Console Output[/bold]",
                     border_style="green"
+                ))
+            diff = get_git_diff(prjdir)
+            if diff:
+                console.print(Panel(
+                    Syntax(diff, "diff", theme="monokai"),
+                    title="[bold yellow]Changes Applied[/bold yellow]",
+                    border_style="yellow"
+                ))
+            else:
+                console.print(Panel(
+                    "[dim]No file changes detected[/dim]",
+                    title="[bold yellow]Changes Applied[/bold yellow]",
+                    border_style="yellow"
                 ))
             log_entry = f"Architect planned: '{state['current_plan'][:100]}...'\nResult: SUCCESS.\nConsole: {stdout[:10000]}"
             return {
@@ -452,16 +463,6 @@ def route_after_thinker(state: AgentState):
 
 
 def ask_user(state: AgentState):
-    diff = get_git_diff(state['prjdir'])
-    if diff:
-        console.print(Panel(
-            Syntax(diff[:3000], "diff", theme="monokai"),
-            title="[bold yellow]Git Diff[/bold yellow]",
-            border_style="yellow"
-        ))
-    else:
-        console.print("[dim]No uncommitted changes detected.[/dim]")
-
     console.print(Panel(
         "[bold]Available commands:[/bold]\n"
         "  [cyan]/commit[/cyan]   — Commit all changes to git\n"
