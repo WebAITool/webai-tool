@@ -1,29 +1,22 @@
 from openai import OpenAI
 
 from llm_config import (
-    API_KEY,
-    LLM_API_BASE_URL,
-    LLM_MODEL,
+    load_llm_config,
+    validate_llm_config,
 )
 
 
 def generate(prompt):
-    # api_key = "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"
+    config = load_llm_config()
+    validate_llm_config(config)
     client = OpenAI(
-        # base_url="https://openrouter.ai/api/v1",
-        base_url=LLM_API_BASE_URL,
-        api_key=API_KEY,
+        base_url=config.api_base_url,
+        api_key=config.api_key,
     )
 
 
     completion = client.chat.completions.create(
-        # model="deepseek/deepseek-chat-v3.1:free",
-        # model="x-ai/grok-4-fast:free",
-        # model="openai/gpt-oss-20b:free",
-        # model="meituan/longcat-flash-chat:free",
-        # model="deepseek/deepseek-chat-v3.1",
-        # model = "deepseek/deepseek-v3.1-terminus",
-        model=LLM_MODEL,
+        model=config.model,
         messages=[
             {
                 "role": "user",

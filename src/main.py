@@ -35,6 +35,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    try:
+        return _main(argv)
+    except KeyboardInterrupt:
+        print("\nInterrupted by user.")
+        return 130
+
+
+def _main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
@@ -51,6 +59,7 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(filename=LOG_FILE, level=logging.DEBUG)
 
     prj_dir = Path(args.prjdir).absolute()
+    prj_dir.mkdir(parents=True, exist_ok=True)
 
     if args.docpath is not None:
         docpath = Path(args.docpath).absolute()

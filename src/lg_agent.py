@@ -3,6 +3,7 @@ import logging
 import os
 import re
 import subprocess
+import sys
 from dataclasses import dataclass
 from typing import List, TypedDict
 
@@ -10,7 +11,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph
 
-from llm_config import LLMConfig, load_llm_config
+from llm_config import LLMConfig, load_llm_config, validate_llm_config
 
 
 IGNORE_DIRS = {
@@ -65,6 +66,7 @@ class AgentState(TypedDict):
 def create_llm(config: LLMConfig | None = None) -> ChatOpenAI:
     if config is None:
         config = load_llm_config()
+    validate_llm_config(config)
     return ChatOpenAI(
         model_name=config.model,
         base_url=config.api_base_url,
@@ -242,7 +244,7 @@ def execute_python_code(code: str, prjdir: str) -> ExecutionResult:
             file.write(code)
 
         result = subprocess.run(
-            ["python", ".agent_script.py"],
+            [sys.executable, ".agent_script.py"],
             cwd=prjdir,
             capture_output=True,
             text=True,

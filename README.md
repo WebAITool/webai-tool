@@ -46,7 +46,11 @@ uv run python -m playwright install chromium
 
 ## Configuration
 
-WebAI Tool uses an OpenAI-compatible chat completions provider. Create a local `.env` file in the repository root and add the provider settings.
+WebAI Tool uses an OpenAI-compatible chat completions provider. Copy `.env.example` to a local `.env` file in the repository root and add the provider settings. All four variables are required; WebAI Tool does not infer a provider from the API key.
+
+```bash
+cp .env.example .env
+```
 
 Polza.ai-style example:
 
@@ -89,7 +93,7 @@ Keep `.env` untracked. The file is ignored by `.gitignore` and excluded from the
 The main entrypoint is `src/main.py`:
 
 ```bash
-uv run python src/main.py --prjdir <output-project-dir> (--docpath <doc-file> | --refprjpath <reference-project-dir>) [--enable-commits] [--commit-branch <branch>] <taskspec-file>
+uv run python src/main.py --prjdir <output-project-dir> (--docpath <doc-file> | --refprjpath <reference-project-dir>) [--enable-commits] [--commit-branch <branch>] [--interactive] <taskspec-file>
 ```
 
 Arguments:
@@ -100,6 +104,7 @@ Arguments:
 - `taskspec`: path to the task specification file that describes what the agent should build or change.
 - `--enable-commits`: optional. Allows the agent to commit generated changes in the target project.
 - `--commit-branch`: branch used for agent commits when commits are enabled. Defaults to `dev`.
+- `--interactive`: optional. Prompts for user feedback after the agent confirms completion. Non-interactive is the default and is recommended for Docker and CI runs.
 
 `--docpath` and `--refprjpath` are mutually exclusive.
 
@@ -195,6 +200,21 @@ docker run --rm \
 ```
 
 Host networking is a troubleshooting option for Docker network environments where the default bridge has no outbound provider access.
+
+Interactive feedback is opt-in. Use an interactive terminal only when you intentionally want post-completion feedback prompts:
+
+```bash
+docker run --rm -it \
+  --env-file .env \
+  --user "$(id -u):$(id -g)" \
+  -e HOME=/tmp \
+  -v "$PWD/demo-workspace:/workspace" \
+  webai-tool:release \
+  --interactive \
+  --prjdir /workspace \
+  --docpath /workspace/project-doc.md \
+  /workspace/task.txt
+```
 
 See the GitHub Wiki page [Deployment](https://github.com/WebAITool/webai-tool/wiki/Deployment) for Docker deployment details.
 

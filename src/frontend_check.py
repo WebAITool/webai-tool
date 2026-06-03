@@ -2,18 +2,26 @@ import subprocess
 import time
 import base64
 import re
+from dataclasses import replace
 from pathlib import Path
 from typing import Optional, Tuple, List
+from urllib.error import URLError
+from urllib.request import urlopen
 
 from openai import OpenAI
-from llm_config import API_KEY, FRONTEND_VISION_MODEL, LLM_API_BASE_URL
+from llm_config import load_llm_config, validate_llm_config
 
 
 class FrontendChecker:
     def __init__(self, api_key: Optional[str] = None):
-        self.api_key = api_key or API_KEY
+        config = load_llm_config()
+        if api_key is not None:
+            config = replace(config, api_key=api_key)
+        validate_llm_config(config)
+        self.api_key = api_key or config.api_key
+        self.vision_model = config.frontend_vision_model
         self.client = OpenAI(
-            base_url=LLM_API_BASE_URL,
+            base_url=config.api_base_url,
             api_key=self.api_key
         )
         self.dev_process = None
@@ -87,14 +95,28 @@ class FrontendChecker:
                 cwd=str(frontend_path),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                shell=True
             )
             print(f"Starting dev server on port {port}...")
-            time.sleep(5)
-            return True
+            if self._wait_for_server(port):
+                return True
+            print(f"Dev server did not become ready on port {port}")
+            self.stop_dev_server()
+            return False
         except Exception as e:
             print(f"Failed to start dev server: {e}")
             return False
+
+    def _wait_for_server(self, port: int, timeout: float = 30.0) -> bool:
+        deadline = time.monotonic() + timeout
+        url = f"http://127.0.0.1:{port}"
+        while time.monotonic() < deadline:
+            try:
+                with urlopen(url, timeout=1) as response:
+                    if response.status < 500:
+                        return True
+            except (OSError, URLError):
+                time.sleep(0.5)
+        return False
 
     def stop_dev_server(self):
         if self.dev_process:
@@ -169,7 +191,7 @@ Analyze:
 Provide actionable feedback."""
 
             response = self.client.chat.completions.create(
-                model=FRONTEND_VISION_MODEL,
+                model=self.vision_model,
                 messages=[
                     {
                         "role": "user",

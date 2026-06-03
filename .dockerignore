@@ -3,6 +3,7 @@
 .dockerignore
 .env
 .env.*
+!.env.example
 .venv
 venv
 __pycache__

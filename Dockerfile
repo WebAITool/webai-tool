@@ -16,7 +16,8 @@ RUN apt-get update \
     tree \
     && rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml uv.lock README.md ./
+COPY pyproject.toml uv.lock ./
+RUN touch ./README.md
 
 RUN uv sync --frozen --no-dev --no-install-project \
     && .venv/bin/python -m playwright install --with-deps chromium
@@ -26,6 +27,7 @@ RUN useradd --create-home --uid 10001 appuser \
     && chown -R appuser:appuser /app /workspace /ms-playwright
 
 COPY --chown=appuser:appuser src ./src
+COPY --chown=appuser:appuser README.md ./
 
 USER appuser
 WORKDIR /workspace

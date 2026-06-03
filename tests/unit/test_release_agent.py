@@ -1,4 +1,5 @@
 import importlib
+import subprocess
 import sys
 import types
 
@@ -216,6 +217,22 @@ def test_execute_code_records_failure_after_retry_exhaustion(monkeypatch):
     assert "Result: FAILURE" in update["chat_history"][-1]
 
 
+def test_execute_python_code_uses_current_interpreter(tmp_path, monkeypatch):
+    lg_agent = _load_lg_agent(monkeypatch)
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(lg_agent.subprocess, "run", fake_run)
+
+    result = lg_agent.execute_python_code("print('ok')", str(tmp_path))
+
+    assert result.success
+    assert calls[0][0][0] == sys.executable
+
+
 def test_route_after_thinker_accepts_done_marker_with_extra_text(monkeypatch):
     lg_agent = _load_lg_agent(monkeypatch)
 
@@ -223,6 +240,18 @@ def test_route_after_thinker_accepts_done_marker_with_extra_text(monkeypatch):
     state["current_plan"] = "The task is complete.\n[DONE]"
 
     assert lg_agent.route_after_thinker(state) == "verify_completion"
+
+
+def test_verify_completion_accepts_yes_inside_model_explanation(monkeypatch):
+    lg_agent = _load_lg_agent(monkeypatch)
+    verifier = lg_agent.make_verify_completion(object())
+    state = lg_agent.get_initial_state(goal="done", spec="", prjdir="/tmp/project")
+
+    monkeypatch.setattr(lg_agent, "invoke_text", lambda *args: "Yes, it is done.")
+
+    update = verifier(state)
+
+    assert update["current_plan"] == "[CONFIRMED_DONE]"
 
 
 def test_execute_python_code_captures_traceback_and_removes_script(
