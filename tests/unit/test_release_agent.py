@@ -104,6 +104,29 @@ def test_create_agent_wires_release_graph_nodes(monkeypatch):
     ]
 
 
+def test_create_agent_adds_interactive_feedback_node_only_when_enabled(monkeypatch):
+    lg_agent = _load_lg_agent(monkeypatch)
+
+    config = lg_agent.LLMConfig(
+        api_key="test-key",
+        api_base_url="https://example.test/v1",
+        model="provider/model",
+        frontend_vision_model="provider/vision",
+    )
+
+    default_graph = lg_agent.create_agent(llm_config=config)
+    interactive_graph = lg_agent.create_agent(interactive=True, llm_config=config)
+
+    assert "ask_user" not in default_graph.nodes
+    assert "ask_user" in interactive_graph.nodes
+    assert [source for source, _ in interactive_graph.conditional_edges] == [
+        "thinker",
+        "execute_code",
+        "verify_completion",
+        "ask_user",
+    ]
+
+
 def test_extract_code_selects_python_block(monkeypatch):
     lg_agent = _load_lg_agent(monkeypatch)
 
