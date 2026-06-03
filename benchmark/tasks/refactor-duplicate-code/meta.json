@@ -1,0 +1,10 @@
+{
+  "id": "refactor-duplicate-code",
+  "name": "Refactor duplicate validation logic",
+  "category": "refactor",
+  "difficulty": "medium",
+  "language": "python",
+  "framework": "",
+  "timeout_seconds": 120,
+  "max_agent_steps": 25
+}

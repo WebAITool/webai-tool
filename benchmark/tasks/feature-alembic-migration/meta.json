@@ -1,0 +1,10 @@
+{
+  "id": "feature-alembic-migration",
+  "name": "Create Alembic migration for new models",
+  "category": "feature",
+  "difficulty": "hard",
+  "language": "python",
+  "framework": "alembic+sqlalchemy",
+  "timeout_seconds": 180,
+  "max_agent_steps": 35
+}

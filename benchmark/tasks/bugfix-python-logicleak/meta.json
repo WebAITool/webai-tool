@@ -1,0 +1,10 @@
+{
+  "id": "bugfix-python-logicleak",
+  "name": "Fix logic error in discount calculator",
+  "category": "bugfix",
+  "difficulty": "easy",
+  "language": "python",
+  "framework": "",
+  "timeout_seconds": 60,
+  "max_agent_steps": 15
+}

@@ -1,0 +1,10 @@
+{
+  "id": "feature-sqlalchemy-model",
+  "name": "Add SQLAlchemy models for project management",
+  "category": "feature",
+  "difficulty": "medium",
+  "language": "python",
+  "framework": "sqlalchemy",
+  "timeout_seconds": 120,
+  "max_agent_steps": 25
+}

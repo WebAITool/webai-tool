@@ -1,0 +1,10 @@
+{
+  "id": "refactor-python-async",
+  "name": "Refactor sync file reader to async",
+  "category": "refactor",
+  "difficulty": "hard",
+  "language": "python",
+  "framework": "",
+  "timeout_seconds": 120,
+  "max_agent_steps": 30
+}

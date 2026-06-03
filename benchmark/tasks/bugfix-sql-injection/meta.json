@@ -1,0 +1,10 @@
+{
+  "id": "bugfix-sql-injection",
+  "name": "Fix SQL injection vulnerability",
+  "category": "bugfix",
+  "difficulty": "medium",
+  "language": "python",
+  "framework": "sqlite3",
+  "timeout_seconds": 120,
+  "max_agent_steps": 25
+}

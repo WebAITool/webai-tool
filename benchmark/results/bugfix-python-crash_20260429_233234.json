@@ -1,0 +1,15 @@
+{
+  "task_id": "bugfix-python-crash",
+  "task_name": "Fix crash in user registration",
+  "category": "bugfix",
+  "difficulty": "easy",
+  "success": false,
+  "tests_passed": 0,
+  "tests_failed": 0,
+  "tests_total": 0,
+  "test_output": "C:\\Python314\\python.exe: No module named pytest\n",
+  "agent_steps": 0,
+  "time_seconds": 0,
+  "error": null,
+  "timestamp": "2026-04-29T23:32:34.616453"
+}

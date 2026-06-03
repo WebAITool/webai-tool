@@ -1,0 +1,10 @@
+{
+  "id": "feature-fastapi-deps",
+  "name": "Add FastAPI dependency injection for DB sessions",
+  "category": "feature",
+  "difficulty": "medium",
+  "language": "python",
+  "framework": "fastapi+sqlalchemy",
+  "timeout_seconds": 120,
+  "max_agent_steps": 25
+}

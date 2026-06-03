@@ -1,0 +1,10 @@
+{
+  "id": "refactor-fastapi-routers",
+  "name": "Split monolithic FastAPI app into routers",
+  "category": "refactor",
+  "difficulty": "medium",
+  "language": "python",
+  "framework": "fastapi",
+  "timeout_seconds": 120,
+  "max_agent_steps": 25
+}

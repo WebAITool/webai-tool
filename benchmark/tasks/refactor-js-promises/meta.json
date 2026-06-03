@@ -1,0 +1,10 @@
+{
+  "id": "refactor-js-promises",
+  "name": "Refactor callback hell to async/await",
+  "category": "refactor",
+  "difficulty": "medium",
+  "language": "javascript",
+  "framework": "",
+  "timeout_seconds": 60,
+  "max_agent_steps": 20
+}

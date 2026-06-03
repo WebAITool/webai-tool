@@ -1,0 +1,10 @@
+{
+  "id": "feature-fastapi-auth",
+  "name": "Add JWT authentication to FastAPI app",
+  "category": "feature",
+  "difficulty": "hard",
+  "language": "python",
+  "framework": "fastapi",
+  "timeout_seconds": 180,
+  "max_agent_steps": 40
+}

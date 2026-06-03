@@ -1,0 +1,10 @@
+{
+  "id": "create-rest-api",
+  "name": "Create a book library REST API",
+  "category": "create",
+  "difficulty": "hard",
+  "language": "python",
+  "framework": "fastapi",
+  "timeout_seconds": 180,
+  "max_agent_steps": 40
+}
