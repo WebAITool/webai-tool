@@ -1,0 +1,19 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# System dependencies for agent tools
+RUN for i in 1 2 3; do apt-get update && apt-get install -y --no-install-recommends git tree && break || sleep 5; done \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --upgrade pip && pip install --no-cache-dir -r requirements.txt
+
+# Install playwright browsers (needed by frontend_check)
+RUN playwright install chromium --with-deps 2>/dev/null || true
+
+COPY . .
+
+EXPOSE 8000
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
