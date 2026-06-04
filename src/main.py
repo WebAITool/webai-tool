@@ -1,3 +1,7 @@
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning, module="smolagents")
+warnings.filterwarnings("ignore", category=UserWarning, module="langchain_core")
+
 import argparse
 import logging
 from pathlib import Path
