@@ -1,0 +1,544 @@
+"""
+repo_map.py — Repository Map Generator for WebAI Toolkit.
+
+Generates a tree-like map of a project's file structure with code
+analysis (classes, functions, methods, etc.) powered by tree-sitter.
+Supports Python, JavaScript, TypeScript, and Vue out of the box.
+"""
+
+import os
+from dataclasses import dataclass
+
+from langchain_core.tools import tool
+from tree_sitter_language_pack import SupportedLanguage, get_language, get_parser
+from graph.models import ReceiverTag as _ReceiverTag
+
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
+MAX_FILE_SIZE = 512 * 1024  # 512 KB — skip files larger than this
+MAX_DIR_DEPTH = 30  # max directory nesting depth to prevent infinite recursion
+MAX_OUTPUT_LINES = 5000  # truncate output to prevent context window overflow
+
+IGNORED_DIRS = {
+    ".git",
+    "__pycache__",
+    "node_modules",
+    "dist",
+    "venv",
+    ".venv",
+    ".env",
+    ".idea",
+    ".vscode",
+}
+
+IGNORED_FILES = {
+    ".env",
+    ".env.local",
+    ".env.production",
+    ".env.development",
+}
+
+IGNORED_EXTENSIONS = {
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".svg",
+    ".ico",
+    ".bmp",
+    ".webp",
+    ".mp4",
+    ".avi",
+    ".mov",
+    ".mkv",
+    ".mp3",
+    ".wav",
+    ".ogg",
+    ".woff",
+    ".woff2",
+    ".ttf",
+    ".eot",
+    ".pyc",
+    ".pyo",
+}
+
+
+@dataclass
+class Tag:
+    file: str
+    name: str
+    line: int
+    kind: str           # "def" | "ref"
+    scope: str = ""     # enclosing function/class name
+    node_type: str = "" # tree-sitter node type (e.g. "interface_declaration")
+    capture_name: str = "" # full capture name (e.g. "name.definition.class")
+
+
+# ---------------------------------------------------------------------------
+# Extension → tree-sitter language mapping
+# ---------------------------------------------------------------------------
+
+_EXT_TO_LANG: dict[str, SupportedLanguage] = {
+    # Python
+    ".py": "python",
+    ".pyw": "python",
+    # JavaScript / TypeScript
+    ".js": "javascript",
+    ".mjs": "javascript",
+    ".cjs": "javascript",
+    ".jsx": "javascript",
+    ".ts": "typescript",
+    ".tsx": "tsx",
+    # Vue
+    ".vue": "vue",
+}
+
+
+# ---------------------------------------------------------------------------
+# .scm query-based tag extraction
+# ---------------------------------------------------------------------------
+
+_QUERY_CACHE: dict[str, str | None] = {}
+
+
+def _load_query(lang: str) -> str | None:
+    """Load .scm query file for the given language. Returns None if not found."""
+    if lang in _QUERY_CACHE:
+        return _QUERY_CACHE[lang]
+    scm_path = os.path.join(os.path.dirname(__file__), "queries", f"{lang}-tags.scm")
+    try:
+        with open(scm_path, "r") as f:
+            text = f.read()
+    except FileNotFoundError:
+        _QUERY_CACHE[lang] = None
+        return None
+    _QUERY_CACHE[lang] = text
+    return text
+
+
+def _find_scope(node, root) -> str:
+    """Walk up from node to find nearest enclosing function/class name."""
+    current = node.parent
+    scope_types = {"function_definition", "class_definition",
+                   "function_declaration", "class_declaration",
+                   "method_definition", "arrow_function"}
+    while current and current != root:
+        if current.type in scope_types:
+            name_node = current.child_by_field_name("name")
+            if name_node:
+                if name_node == node:
+                    current = current.parent
+                    continue
+                return name_node.text.decode("utf-8", errors="replace")
+        current = current.parent
+    return ""
+
+
+def _extract_tags_and_receivers(
+    filepath: str, lang: str
+) -> tuple[list[Tag], list[_ReceiverTag]]:
+    """Extract Tags and ReceiverTags from a file using .scm queries."""
+    from tree_sitter import Query, QueryCursor
+
+    try:
+        if os.path.getsize(filepath) > MAX_FILE_SIZE:
+            return [], []
+        with open(filepath, "rb") as f:
+            source = f.read()
+    except OSError:
+        return [], []
+
+    # Vue SFC: extract script block, parse as JS/TS, add template refs
+    if lang == "vue":
+        from vue_utils import extract_vue_script, extract_vue_template_refs
+
+        result = extract_vue_script(filepath=filepath)
+        if result is None:
+            return [], []
+        script_bytes, actual_lang, line_offset = result
+
+        scm_text = _load_query(actual_lang)
+        if scm_text is None:
+            return [], []
+
+        try:
+            parser = get_parser(actual_lang)
+            ts_lang = get_language(actual_lang)
+        except Exception:
+            return [], []
+
+        tree = parser.parse(script_bytes)
+        query = Query(ts_lang, scm_text)
+        cursor = QueryCursor(query)
+        captures = cursor.captures(tree.root_node)
+
+        tags: list[Tag] = []
+        receiver_nodes: dict[int, str] = {}
+
+        for capture_name, nodes in captures.items():
+            if capture_name == "method.receiver":
+                for node in nodes:
+                    line = node.start_point[0] + 1 + line_offset
+                    receiver_nodes[line] = node.text.decode("utf-8", errors="replace")
+                continue
+            if ".definition." in capture_name:
+                kind = "def"
+            elif ".reference." in capture_name:
+                kind = "ref"
+            else:
+                continue
+            for node in nodes:
+                name = node.text.decode("utf-8", errors="replace")
+                line = node.start_point[0] + 1 + line_offset
+                scope = _find_scope(node, tree.root_node)
+                node_type = node.parent.type if node.parent else ""
+                tags.append(Tag(
+                    file=filepath, name=name, line=line,
+                    kind=kind, scope=scope, node_type=node_type,
+                    capture_name=capture_name,
+                ))
+
+        # Add template refs (components + event handlers)
+        for ref_name, ref_line in extract_vue_template_refs(filepath=filepath):
+            tags.append(Tag(
+                file=filepath, name=ref_name, line=ref_line,
+                kind="ref", capture_name="name.reference.call",
+            ))
+
+        # Build receiver tags
+        receiver_tags: list[_ReceiverTag] = []
+        for t in tags:
+            if t.kind == "ref" and t.line in receiver_nodes:
+                receiver_tags.append(_ReceiverTag(
+                    file=filepath,
+                    receiver_name=receiver_nodes[t.line],
+                    method_name=t.name,
+                    line=t.line,
+                    scope=t.scope,
+                ))
+
+        return tags, receiver_tags
+
+    scm_text = _load_query(lang)
+    if scm_text is None:
+        return [], []
+
+    try:
+        parser = get_parser(lang)
+        ts_lang = get_language(lang)
+    except Exception:
+        return [], []
+
+    tree = parser.parse(source)
+    query = Query(ts_lang, scm_text)
+    cursor = QueryCursor(query)
+    captures = cursor.captures(tree.root_node)
+
+    tags: list[Tag] = []
+    # Collect receiver nodes keyed by line for pairing
+    receiver_nodes: dict[int, str] = {}  # line → receiver_name
+
+    for capture_name, nodes in captures.items():
+        if capture_name == "method.receiver":
+            for node in nodes:
+                line = node.start_point[0] + 1
+                receiver_nodes[line] = node.text.decode("utf-8", errors="replace")
+            continue
+
+        if ".definition." in capture_name:
+            kind = "def"
+        elif ".reference." in capture_name:
+            kind = "ref"
+        else:
+            continue
+
+        for node in nodes:
+            name = node.text.decode("utf-8", errors="replace")
+            line = node.start_point[0] + 1
+            scope = _find_scope(node, tree.root_node)
+            node_type = node.parent.type if node.parent else ""
+            tags.append(Tag(
+                file=filepath, name=name, line=line,
+                kind=kind, scope=scope, node_type=node_type,
+                capture_name=capture_name,
+            ))
+
+    # Build ReceiverTags: pair receiver_nodes with @name.reference.call on same line
+    receiver_tags: list[_ReceiverTag] = []
+    for t in tags:
+        if t.kind == "ref" and t.line in receiver_nodes:
+            receiver_tags.append(_ReceiverTag(
+                file=filepath,
+                receiver_name=receiver_nodes[t.line],
+                method_name=t.name,
+                line=t.line,
+                scope=t.scope,
+            ))
+
+    return tags, receiver_tags
+
+
+def _extract_tags(filepath: str, lang: str) -> list[Tag]:
+    """Extract definition and reference tags from a file using .scm queries."""
+    tags, _ = _extract_tags_and_receivers(filepath, lang)
+    return tags
+
+
+# ---------------------------------------------------------------------------
+# Language-specific parsers
+# ---------------------------------------------------------------------------
+
+
+def _parse_vue(filepath: str) -> list[Tag]:
+    """Parse a .vue SFC and return Tags."""
+    try:
+        if os.path.getsize(filepath) > MAX_FILE_SIZE:
+            return []
+        with open(filepath, "rb") as f:
+            source = f.read()
+    except OSError:
+        return []
+
+    try:
+        parser = get_parser("vue")
+    except Exception:
+        return []
+
+    tree = parser.parse(source)
+    tags: list[Tag] = []
+
+    for child in tree.root_node.children:
+        if child.type == "template_element":
+            tags.append(Tag(file=filepath, name="<template>", line=child.start_point[0] + 1, kind="def"))
+        elif child.type == "script_element":
+            tags.append(Tag(file=filepath, name="<script>", line=child.start_point[0] + 1, kind="def"))
+            tags.extend(_parse_vue_script(child, filepath))
+        elif child.type == "style_element":
+            tags.append(Tag(file=filepath, name="<style>", line=child.start_point[0] + 1, kind="def"))
+
+    return tags
+
+
+def _parse_vue_script(script_node, filepath: str) -> list[Tag]:
+    """Extract Tags from a Vue <script> block using vue_utils + .scm queries."""
+    from vue_utils import extract_vue_script
+
+    result = extract_vue_script(filepath=filepath)
+    if result is None:
+        return []
+    script_bytes, lang, line_offset = result
+
+    # Re-use _extract_tags by writing to temp file (existing pattern for _parse_vue display)
+    import tempfile
+    ext = ".ts" if lang == "typescript" else ".js"
+    with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as f:
+        f.write(script_bytes)
+        f.flush()
+        tmp_path = f.name
+    try:
+        tags = _extract_tags(tmp_path, lang)
+    finally:
+        os.unlink(tmp_path)
+
+    for tag in tags:
+        tag.file = filepath
+        tag.line += line_offset
+
+    return tags
+
+
+# ---------------------------------------------------------------------------
+# Dispatcher
+# ---------------------------------------------------------------------------
+
+
+def _should_include(name: str, is_dir: bool) -> bool:
+    """Return True if the file/dir should be included in the map."""
+    if is_dir:
+        return name not in IGNORED_DIRS
+    if name in IGNORED_FILES:
+        return False
+    _, ext = os.path.splitext(name)
+    return ext.lower() not in IGNORED_EXTENSIONS
+
+
+def _parse_file(filepath: str) -> list[Tag]:
+    """Parse a file and return Tags, selecting parser by extension."""
+    _, ext = os.path.splitext(filepath)
+    ext_lower = ext.lower()
+
+    if ext_lower == ".vue":
+        return _parse_vue(filepath)
+
+    lang = _EXT_TO_LANG.get(ext_lower)
+    if lang:
+        return _extract_tags(filepath, lang)
+
+    return []
+
+
+def _tag_label(tag: Tag) -> str:
+    """Return 'name (kind)' using the capture_name suffix, e.g. 'login (function)'."""
+    # capture_name looks like "name.definition.function" → extract "function"
+    parts = tag.capture_name.rsplit(".", 1)
+    kind = parts[-1] if len(parts) > 1 else ""
+    # function nested inside a class → method
+    if kind == "function" and tag.scope:
+        kind = "method"
+    return f"{tag.name} ({kind})" if kind else tag.name
+
+
+# ---------------------------------------------------------------------------
+# RepomapGenerator
+# ---------------------------------------------------------------------------
+
+
+class RepomapGenerator:
+    """Generates a lightweight repository map suitable for LLM context."""
+
+    def get_map(self, root_path: str, show_references: bool = False) -> str:
+        """Return a tree-like string representation of the project structure.
+
+        The tree includes:
+        - Directory hierarchy
+        - File names
+        - Lightweight code summaries via tree-sitter
+
+        Args:
+            root_path: Absolute or relative path to the project root.
+            show_references: If True, append a cross-file references section.
+
+        Returns:
+            A multi-line string with indented tree structure.
+        """
+        root_path = os.path.abspath(root_path)
+        if not os.path.isdir(root_path):
+            return f"Error: '{root_path}' is not a valid directory."
+
+        lines: list[str] = []
+        all_tags: list[Tag] = []
+        self._walk(root_path, lines, all_tags)
+
+        if show_references and all_tags:
+            from graph.builder import build as _build_graph
+            graph = _build_graph(root_path)
+            section = graph.format_file_edges(root_path)
+            if section:
+                lines.append(section)
+
+        if not lines:
+            return "(empty project)"
+        if len(lines) > MAX_OUTPUT_LINES:
+            lines = lines[:MAX_OUTPUT_LINES]
+            lines.append(f"... (truncated at {MAX_OUTPUT_LINES} lines)")
+        return "\n".join(lines)
+
+    def _walk(self, current: str, lines: list[str], all_tags: list[Tag],
+              prefix: str = "", depth: int = 0) -> None:
+        """Recursively walk the directory tree with box-drawing characters."""
+        if depth >= MAX_DIR_DEPTH:
+            return
+        try:
+            entries = sorted(os.listdir(current))
+        except OSError:
+            return
+
+        dirs: list[str] = []
+        files: list[str] = []
+
+        for entry in entries:
+            full = os.path.join(current, entry)
+            if os.path.islink(full):
+                continue
+            is_dir = os.path.isdir(full)
+            if _should_include(entry, is_dir):
+                if is_dir:
+                    dirs.append(entry)
+                else:
+                    files.append(entry)
+
+        items: list[tuple[str, bool]] = [(d, True) for d in dirs] + [(f, False) for f in files]
+        for i, (name, is_dir) in enumerate(items):
+            is_last = i == len(items) - 1
+            connector = "└── " if is_last else "├── "
+            child_prefix = prefix + ("    " if is_last else "│   ")
+
+            if is_dir:
+                lines.append(f"{prefix}{connector}{name}/")
+                self._walk(os.path.join(current, name), lines, all_tags,
+                           child_prefix, depth + 1)
+            else:
+                filepath = os.path.join(current, name)
+                tags = _parse_file(filepath)
+                all_tags.extend(tags)
+                defs = sorted([t for t in tags if t.kind == "def"], key=lambda t: t.line)
+                lines.append(f"{prefix}{connector}{name}")
+                if defs:
+                    self._render_tags(defs, lines, child_prefix)
+
+    @staticmethod
+    def _render_tags(defs: list[Tag], lines: list[str], prefix: str) -> None:
+        """Render tag hierarchy with box-drawing characters."""
+        top_level: list[Tag] = []
+        children: dict[str, list[Tag]] = {}
+        for t in defs:
+            if not t.scope:
+                top_level.append(t)
+            else:
+                children.setdefault(t.scope, []).append(t)
+
+        # Build ordered items: each top-level tag with its scoped children
+        items: list[tuple[Tag, list[Tag]]] = []
+        for t in top_level:
+            items.append((t, children.pop(t.name, [])))
+        # Orphaned scoped tags (scope not in top-level) as standalone
+        for orphans in children.values():
+            for t in orphans:
+                items.append((t, []))
+
+        for i, (tag, kids) in enumerate(items):
+            is_last = i == len(items) - 1
+            connector = "└── " if is_last else "├── "
+            lines.append(f"{prefix}{connector}{_tag_label(tag)}")
+            if kids:
+                ext = prefix + ("    " if is_last else "│   ")
+                for j, kid in enumerate(kids):
+                    kid_last = j == len(kids) - 1
+                    kid_conn = "└── " if kid_last else "├── "
+                    lines.append(f"{ext}{kid_conn}{_tag_label(kid)}")
+
+
+# ---------------------------------------------------------------------------
+# Singleton & LangChain Tool
+# ---------------------------------------------------------------------------
+_generator = RepomapGenerator()
+
+
+@tool
+def get_repo_structure(root_path: str | None = None, show_references: bool = False) -> str:
+    """Use this tool to get the file structure and code summary of the current
+    project to understand context.
+
+    Scans the project directory and returns a tree showing files, classes,
+    functions, Vue component sections, and other code-level details.
+
+    Args:
+        root_path: Path to project root. Defaults to current working directory.
+        show_references: If True, append cross-file symbol references.
+
+    Returns:
+        A multi-line text tree of the repository structure with code annotations.
+    """
+    if root_path is None:
+        root_path = os.getcwd()
+    # Prevent path traversal — resolve to absolute and ensure it stays
+    # within the current working directory.  normcase handles
+    # case-insensitive filesystems (Windows NTFS).
+    cwd = os.path.normcase(os.path.realpath(os.getcwd()))
+    resolved = os.path.normcase(os.path.realpath(root_path))
+    if resolved != cwd and not resolved.startswith(cwd + os.sep):
+        return f"Error: path '{root_path}' is outside the project directory."
+    return _generator.get_map(resolved, show_references=show_references)

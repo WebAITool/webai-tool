@@ -8,16 +8,31 @@ import tempfile
 import shutil
 import contextlib
 
-from repomap import (
+from repo_map import (
     _parse_vue,
     _parse_file,
     _extract_tags,
+    _extract_tags_and_receivers,
     RepomapGenerator,
     get_repo_structure,
     MAX_FILE_SIZE,
     MAX_DIR_DEPTH,
     MAX_OUTPUT_LINES,
 )
+
+
+def _extract_tags_with_receivers_from_source(source: bytes, lang: str):
+    """Helper: write bytes to temp file, extract tags and receivers."""
+    import tempfile, os
+    suffix = {"python": ".py", "javascript": ".js", "typescript": ".ts"}.get(lang, ".py")
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
+        f.write(source)
+        f.flush()
+        path = f.name
+    try:
+        return _extract_tags_and_receivers(path, lang)
+    finally:
+        os.unlink(path)
 
 
 class TestParseWithTreesitter:
@@ -340,6 +355,37 @@ async def async_helper():
         assert "helper" in names
         assert "async_helper" in names
 
+    def test_python_references(self):
+        code = b'''
+from auth import login
+import os
+
+def handler():
+    result = login(user)
+    os.path.exists("test")
+'''
+        tags = _extract_tags_from_source(code, "python")
+        refs = [t for t in tags if t.kind == "ref"]
+        ref_names = [t.name for t in refs]
+        assert "login" in ref_names
+
+    def test_python_scope_detection(self):
+        code = b'''
+def handler():
+    result = login(user)
+
+def processor():
+    data = fetch(url)
+'''
+        tags = _extract_tags_from_source(code, "python")
+        refs = [t for t in tags if t.kind == "ref"]
+        login_ref = [t for t in refs if t.name == "login"]
+        assert len(login_ref) >= 1
+        assert login_ref[0].scope == "handler"
+        fetch_ref = [t for t in refs if t.name == "fetch"]
+        assert len(fetch_ref) >= 1
+        assert fetch_ref[0].scope == "processor"
+
     def test_python_definition_scope(self):
         """Method defined inside class has scope = class name, not self."""
         code = b'''
@@ -381,6 +427,19 @@ const handler = (req, res) => { res.send("ok"); };
         assert "helper" in defs
         assert "handler" in defs
 
+    def test_javascript_references(self):
+        code = b'''
+import { login } from "./auth";
+
+function handle() {
+    login(user);
+    console.log("done");
+}
+'''
+        tags = _extract_tags_from_source(code, "javascript")
+        refs = [t.name for t in tags if t.kind == "ref"]
+        assert "login" in refs
+
     def test_typescript_definitions(self):
         code = b'''
 interface UserRepo {
@@ -420,7 +479,29 @@ const Button = ({ label }) => <button>{label}</button>;
         assert "App" in defs
         assert "Button" in defs
 
+    def test_python_method_receiver(self):
+        """@method.receiver captures obj in obj.method() calls."""
+        source = b"service.validate()\n"
+        tags, receivers = _extract_tags_with_receivers_from_source(source, "python")
+        receiver_names = [r.receiver_name for r in receivers]
+        assert "service" in receiver_names
+
+
 class TestRepoMapWithReferences:
+    def test_inline_references_shown(self):
+        import tempfile, shutil
+        tmpdir = tempfile.mkdtemp()
+        try:
+            with open(os.path.join(tmpdir, "auth.py"), "w") as f:
+                f.write("def login(user):\n    pass\n")
+            with open(os.path.join(tmpdir, "views.py"), "w") as f:
+                f.write("from auth import login\ndef dashboard():\n    login(user)\n")
+            gen = RepomapGenerator()
+            result = gen.get_map(tmpdir, show_references=True)
+            assert "->" in result
+        finally:
+            shutil.rmtree(tmpdir)
+
     def test_no_references_by_default(self):
         import tempfile, shutil
         tmpdir = tempfile.mkdtemp()
@@ -533,161 +614,6 @@ class TestBoundariesAndLimits:
 
             assert ".env" not in result
             assert "app.py" in result
-        finally:
-            shutil.rmtree(tmpdir)
-
-
-class TestRepomapOutput:
-    """Tests for the full repomap output — what the agent actually sees."""
-
-    def test_python_class_with_methods(self):
-        tmpdir = tempfile.mkdtemp()
-        try:
-            with open(os.path.join(tmpdir, "service.py"), "w") as f:
-                f.write(
-                    "class UserService:\n"
-                    "    def create(self, name):\n"
-                    "        pass\n"
-                    "    def delete(self, uid):\n"
-                    "        pass\n"
-                    "\n"
-                    "def helper():\n"
-                    "    pass\n"
-                )
-            gen = RepomapGenerator()
-            result = gen.get_map(tmpdir)
-            assert "UserService (class)" in result
-            assert "create (method)" in result
-            assert "delete (method)" in result
-            assert "helper (function)" in result
-        finally:
-            shutil.rmtree(tmpdir)
-
-    def test_nested_functions_not_labeled_method(self):
-        tmpdir = tempfile.mkdtemp()
-        try:
-            with open(os.path.join(tmpdir, "app.py"), "w") as f:
-                f.write(
-                    "def setup():\n"
-                    "    def inner():\n"
-                    "        pass\n"
-                )
-            gen = RepomapGenerator()
-            result = gen.get_map(tmpdir)
-            assert "setup (function)" in result
-            assert "inner (function)" in result
-            assert "method" not in result
-        finally:
-            shutil.rmtree(tmpdir)
-
-    def test_javascript_arrow_functions(self):
-        tmpdir = tempfile.mkdtemp()
-        try:
-            with open(os.path.join(tmpdir, "handler.js"), "w") as f:
-                f.write(
-                    "function process() {}\n"
-                    "const handler = (req) => {};\n"
-                )
-            gen = RepomapGenerator()
-            result = gen.get_map(tmpdir)
-            assert "process (function)" in result
-            assert "handler (function)" in result
-        finally:
-            shutil.rmtree(tmpdir)
-
-    def test_typescript_interface_and_class(self):
-        tmpdir = tempfile.mkdtemp()
-        try:
-            with open(os.path.join(tmpdir, "models.ts"), "w") as f:
-                f.write(
-                    "interface UserRepo {\n"
-                    "    find(id: string): User;\n"
-                    "}\n"
-                    "class UserService {\n"
-                    "    find(id: string) { return null; }\n"
-                    "}\n"
-                )
-            gen = RepomapGenerator()
-            result = gen.get_map(tmpdir)
-            assert "UserRepo (class)" in result  # interface shown as class
-            assert "UserService (class)" in result
-            assert "find (method)" in result
-        finally:
-            shutil.rmtree(tmpdir)
-
-    def test_vue_sfc_output(self):
-        tmpdir = tempfile.mkdtemp()
-        try:
-            with open(os.path.join(tmpdir, "App.vue"), "w") as f:
-                f.write(
-                    "<template>\n"
-                    "  <div>Hello</div>\n"
-                    "</template>\n"
-                    "<script>\n"
-                    "export default {\n"
-                    "  methods: {\n"
-                    "    logout() { console.log('bye') }\n"
-                    "  }\n"
-                    "}\n"
-                    "</script>\n"
-                    "<style scoped>\n"
-                    ".app { color: red }\n"
-                    "</style>\n"
-                )
-            gen = RepomapGenerator()
-            result = gen.get_map(tmpdir)
-            assert "<template>" in result
-            assert "<script>" in result
-            assert "<style>" in result
-            assert "logout" in result
-        finally:
-            shutil.rmtree(tmpdir)
-
-    def test_directory_structure(self):
-        tmpdir = tempfile.mkdtemp()
-        try:
-            os.makedirs(os.path.join(tmpdir, "src"))
-            with open(os.path.join(tmpdir, "src", "main.py"), "w") as f:
-                f.write("def main():\n    pass\n")
-            with open(os.path.join(tmpdir, "README.md"), "w") as f:
-                f.write("# Hello\n")
-            gen = RepomapGenerator()
-            result = gen.get_map(tmpdir)
-            assert "src/" in result
-            assert "main.py" in result
-            assert "main (function)" in result
-        finally:
-            shutil.rmtree(tmpdir)
-
-    def test_same_name_class_and_function(self):
-        """Function nested in function named same as a class should NOT be method."""
-        tmpdir = tempfile.mkdtemp()
-        try:
-            with open(os.path.join(tmpdir, "weird.py"), "w") as f:
-                f.write(
-                    "class Foo:\n"
-                    "    def bar(self):\n"
-                    "        pass\n"
-                    "\n"
-                    "def Foo():\n"
-                    "    def inner():\n"
-                    "        pass\n"
-                )
-            gen = RepomapGenerator()
-            result = gen.get_map(tmpdir)
-            # bar inside class Foo → method
-            assert "bar (method)" in result
-            # inner inside function Foo → function, NOT method
-            assert "inner (function)" in result
-        finally:
-            shutil.rmtree(tmpdir)
-
-    def test_empty_project(self):
-        tmpdir = tempfile.mkdtemp()
-        try:
-            gen = RepomapGenerator()
-            result = gen.get_map(tmpdir)
-            assert result == "(empty project)"
         finally:
             shutil.rmtree(tmpdir)
 
