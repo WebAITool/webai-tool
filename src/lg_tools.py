@@ -4,6 +4,12 @@ import os
 import platform
 
 
+def _shell_command(cmd: str) -> list[str]:
+    if platform.system() == "Windows":
+        return ["cmd", "/C", cmd]
+    return ["sh", "-lc", cmd]
+
+
 @tool
 def shell_exec(cmd: str) -> str:
     """Executes a shell command and returns its output.
@@ -16,12 +22,8 @@ def shell_exec(cmd: str) -> str:
         str: success or error message.
     """
 
-    if platform.system() == "Windows":
-        cmd = cmd.replace('/', '\\')
-
     result = subprocess.run(
-        cmd,
-        shell=True,
+        _shell_command(cmd),
         capture_output=True,
         text=True,
         encoding='utf-8',

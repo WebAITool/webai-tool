@@ -5,83 +5,120 @@ warnings.filterwarnings("ignore", category=UserWarning, module="langchain_core")
 import argparse
 import logging
 from pathlib import Path
-from dev_env import prepare_dev_env, DevEnvConfig
-from makesrs_prod import makesrs
-from lg_agent import create_agent, get_initial_state
-from logs import LOG_FILE
 
-if __name__ == '__main__':
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--prjdir",
+        help="Directory for project generating",
+        required=True,
+    )
+
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--docpath", help="Path to documentation file")
+    group.add_argument("--refprjpath", help="Directory with reference project")
+
+    parser.add_argument(
+        "--enable-commits",
+        help="Enable commits from tool",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--commit-branch",
+        help='Branch for tool commiting. Default is "dev"',
+        default="dev",
+    )
+    parser.add_argument(
+        "--interactive",
+        help="Ask for user feedback after the agent confirms completion",
+        action="store_true",
+    )
+    parser.add_argument("taskspec", help="Path to task specification")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    try:
+        return _main(argv)
+    except KeyboardInterrupt:
+        print("\nInterrupted by user.")
+        return 130
+
+
+def _main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    from llm_config import load_llm_config, validate_llm_config
+
+    llm_config = load_llm_config()
+    validate_llm_config(llm_config)
+
+    from dev_env import DevEnvConfig, prepare_dev_env
+    from lg_agent import create_agent, get_initial_state
+    from logs import LOG_FILE
+    from makesrs_prod import makesrs
+
     logging.basicConfig(filename=LOG_FILE, level=logging.DEBUG)
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--prjdir", help='Directory for project generating', required=True)
-    
-    group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--docpath", help='Path to documentation file')
-    group.add_argument("--refprjpath", help='Directory with reference project')
-    
-    parser.add_argument("--enable-commits", help='Enable commits from tool (Not heavily used in this version)', action='store_true')
-    parser.add_argument("--commit-branch", help='Branch for tool commiting. Default is "dev"', default='dev')
-    parser.add_argument("taskspec", help='Path to task specification')
+    prj_dir = Path(args.prjdir).absolute()
+    prj_dir.mkdir(parents=True, exist_ok=True)
 
-    args = parser.parse_args()
-
-    PRJ_DIR = Path(args.prjdir).absolute()
-
-    # Разбираемся со спецификацией/документацией проекта
-    READ_DOC_FROM_FILE = args.docpath is not None
-    if READ_DOC_FROM_FILE:
-        docpath = str(Path(args.docpath).absolute())
+    if args.docpath is not None:
+        docpath = Path(args.docpath).absolute()
         refprjpath = None
     else:
-        docpath = str(PRJ_DIR / "generated_doc.txt")
+        docpath = prj_dir / "generated_doc.txt"
         refprjpath = Path(args.refprjpath)
 
-    if not READ_DOC_FROM_FILE:
-        logging.info('Making doc...')
-        print('Making doc from reference project...')
+    if refprjpath is not None:
+        logging.info("making doc...")
         doc = makesrs(str(refprjpath))
         if doc is None:
-            raise RuntimeError("Doc generation returned None!")
-        with open(docpath, 'w+', encoding='utf-8') as docfile:
+            raise RuntimeError("doc is None!")
+        print("doc created")
+        with open(docpath, "w+", encoding="utf-8") as docfile:
             docfile.write(doc)
-        print('Doc created and written.')
+            print("doc writed")
     else:
-        with open(docpath, 'r', encoding='utf-8') as docfile:
+        with open(docpath, "r", encoding="utf-8") as docfile:
             doc = docfile.read()
-        print('Doc loaded from file.')
+            print("doc readed")
 
-    # Подготовка рабочего окружения
     prepare_dev_env(
         DevEnvConfig(
-            PRJ_DIR,
+            prj_dir,
             args.commit_branch,
-            args.enable_commits
+            args.enable_commits,
         )
     )
 
-    # Загружаем конкретную задачу
-    with open(args.taskspec, 'r', encoding='utf-8') as file:
+    with open(args.taskspec, "r", encoding="utf-8") as file:
         taskspec = file.read()
 
-    # Формируем итоговую цель: Спецификация + Текущая задача
-    combined_goal = (
-        "PROJECT SPECIFICATION:\n"
-        f"{doc}\n\n"
-        "CURRENT TASK:\n"
-        f"{taskspec}"
-    )
-
-    # Инициализируем граф
-    config = {"recursion_limit": 250}
+    agent_config = {"recursion_limit": 250}
     impl_state = get_initial_state(
-        goal=combined_goal,
-        prjdir=str(PRJ_DIR),
-        max_steps=50
+        goal=taskspec,
+        spec=doc,
+        prjdir=str(prj_dir),
+        max_steps=50,
     )
-    
-    agent = create_agent()
-    
-    print("\nStarting the Agentic Loop...\n")
-    agent.invoke(impl_state, config=config)
-    print("\nAgentic Loop finished.")
+    agent = create_agent(
+        args.enable_commits,
+        interactive=args.interactive,
+        llm_config=llm_config,
+    )
+    agent.invoke(impl_state, config=agent_config)
+
+    if args.enable_commits:
+        from dev_env import git
+
+        dirty_files = git.get_dirty_files()
+        if dirty_files:
+            git.commit(dirty_files, "Apply WebAI Tool changes")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

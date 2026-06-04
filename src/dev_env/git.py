@@ -64,9 +64,10 @@ def init_git(prjdir: Path, commit_branch: str) -> None:
         has_commits = True
         try:
             next(_REPO.iter_commits())
-        except StopIteration:
+        except (StopIteration, ValueError):
             has_commits = False
         if not has_commits:
+            _INDEX.add([str(gitignore)])
             _INDEX.commit('init', author=_AGENT_ACTOR, committer=_AGENT_ACTOR)
         _DEV_BRANCH = _REPO.create_head(commit_branch)
 
@@ -88,7 +89,7 @@ def get_dirty_files() -> list[str]:
         raise InvalidStateException()
 
     res = []
-    for diff in _INDEX.diff():
+    for diff in _REPO.index.diff(None):
         if diff.deleted_file:
             res.append(diff.a_path)
         elif diff.renamed_file:
@@ -113,10 +114,19 @@ def commit(files: list[str], message: str) -> None:
     if not _is_initialized:
         raise InvalidStateException()
 
+    paths = []
+    for file in files:
+        if " -> " in file:
+            old_path, new_path = file.split(" -> ", 1)
+            paths.extend([old_path, new_path])
+        else:
+            paths.append(file)
+
     try:
-        _INDEX.add(files)
-    except OSError as e:
+        if paths:
+            _REPO.git.add("-A", "--", *paths)
+    except (OSError, git.GitCommandError) as e:
         raise FileNotFoundError(e.args)
-    _INDEX.commit(message, author=_AGENT_ACTOR, committer=_AGENT_ACTOR)
+    _REPO.index.commit(message, author=_AGENT_ACTOR, committer=_AGENT_ACTOR)
 
     logging.debug(f'git.commit(files={str(files)}, message="{message}"')
