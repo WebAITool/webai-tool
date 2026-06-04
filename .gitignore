@@ -11,3 +11,4 @@ venv/
 *.pyc
 .coverage
 .repo-graph/
+tests/data/

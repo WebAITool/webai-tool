@@ -233,6 +233,39 @@ class TestRepomapGenerator:
         finally:
             shutil.rmtree(tmpdir)
 
+    def test_ignores_repo_graph_cache(self):
+        tmpdir = tempfile.mkdtemp()
+        try:
+            cache_dir = os.path.join(tmpdir, ".repo-graph")
+            os.makedirs(cache_dir)
+            with open(os.path.join(cache_dir, "nodes.json"), "w") as f:
+                f.write("[]")
+            with open(os.path.join(tmpdir, "app.py"), "w") as f:
+                f.write("def main(): pass\n")
+
+            gen = RepomapGenerator()
+            result = gen.get_map(tmpdir)
+
+            assert ".repo-graph" not in result
+            assert "nodes.json" not in result
+            assert "app.py" in result
+        finally:
+            shutil.rmtree(tmpdir)
+
+    def test_repo_graph_cache_gets_self_gitignore(self):
+        tmpdir = tempfile.mkdtemp()
+        try:
+            cache_dir = os.path.join(tmpdir, ".repo-graph")
+            os.makedirs(cache_dir)
+
+            gen = RepomapGenerator()
+            gen.get_map(tmpdir)
+
+            with open(os.path.join(cache_dir, ".gitignore"), encoding="utf-8") as f:
+                assert f.read() == "*\n"
+        finally:
+            shutil.rmtree(tmpdir)
+
     def test_invalid_dir(self):
         gen = RepomapGenerator()
         result = gen.get_map("/nonexistent/path/12345")
