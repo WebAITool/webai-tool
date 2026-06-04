@@ -12,7 +12,7 @@ from langgraph.graph import StateGraph, END
 from rich.console import Console
 from rich.panel import Panel
 from rich.syntax import Syntax
-from ui import ask
+from rich.prompt import Prompt
 
 warnings.filterwarnings("ignore", category=FutureWarning, module="smolagents")
 warnings.filterwarnings("ignore", category=UserWarning, module="langchain_core")
@@ -150,10 +150,13 @@ def format_history(history: List[str]) -> str:
     return "\n".join(history)
 
 
-def get_git_diff(prjdir: str) -> str:
+def get_git_diff(prjdir: str, cached: bool = False) -> str:
     try:
+        args = ["git", "diff", "--no-color"]
+        if cached:
+            args.append("--cached")
         result = subprocess.run(
-            ["git", "diff", "--no-color"],
+            args,
             cwd=prjdir,
             capture_output=True,
             text=True
@@ -171,6 +174,8 @@ def get_git_diff(prjdir: str) -> str:
         return result.stdout.strip()
     except Exception:
         return ""
+
+
 
 
 def commit_changes(prjdir: str, message: str = "Agent auto-commit") -> str:
@@ -191,6 +196,7 @@ def commit_changes(prjdir: str, message: str = "Agent auto-commit") -> str:
 
 def debug_llm_call(node_name: str, sys_prompt: str,
                    user_prompt: str, response: str):
+    return
     def safe_print(text: str):
         try:
             print(text)
@@ -304,15 +310,7 @@ def verify_completion(state: AgentState):
 
     answer_upper = answer.upper()
     if "YES" in answer_upper:
-        diff = get_git_diff(state['prjdir'])
-        if diff:
-            console.print(Panel(
-                Syntax(diff, "diff", theme="monokai"),
-                title="[bold green]Final Git Diff[/bold green]",
-                border_style="green"
-            ))
-        else:
-            console.print("[bold green] Goal confirmed as achieved![/bold green]")
+        console.print("[bold green] Goal confirmed as achieved![/bold green]")
         return {"current_plan": "[CONFIRMED_DONE]"}
     else:
         console.print("[bold yellow] Architect thinks more work is needed[/bold yellow]")
@@ -370,6 +368,7 @@ def implementor(state: AgentState):
     code = extract_code(response.content)
 
     debug_llm_call("Implementor", sys_prompt, user_prompt, response.content)
+    
 
     return {"current_code": code}
 
@@ -408,6 +407,17 @@ def execute_code(state: AgentState):
                     border_style="green"
                 ))
             log_entry = f"Architect planned: '{state['current_plan'][:100]}...'\nResult: SUCCESS.\nConsole: {stdout[:10000]}"
+
+            diff = get_git_diff(state['prjdir'])
+            if diff:
+                console.print(Panel(
+                    Syntax(diff, "diff", theme="monokai"),
+                    title="[bold green]Changes from Implementor[/bold green]",
+                    border_style="green"
+                ))
+
+            subprocess.run(["git", "add", ".", ":!.agent_script.py", ":!backend/pyrightconfig.json"], cwd=prjdir)
+
             return {
                 "chat_history": state["chat_history"] + [log_entry],
                 "last_error": "",
@@ -452,24 +462,28 @@ def route_after_thinker(state: AgentState):
 
 
 def ask_user(state: AgentState):
-    diff = get_git_diff(state['prjdir'])
+    diff = get_git_diff(state['prjdir'], True)
     if diff:
         console.print(Panel(
             Syntax(diff[:3000], "diff", theme="monokai"),
-            title="[bold yellow]Git Diff[/bold yellow]",
+            title="[bold yellow]Final Git Diff[/bold yellow]",
             border_style="yellow"
         ))
     else:
         console.print("[dim]No uncommitted changes detected.[/dim]")
 
-    console.print(Panel(
+    ask = Prompt.ask(Panel(
         "[bold]Available commands:[/bold]\n"
         "  [cyan]/commit[/cyan]   — Commit all changes to git\n"
         "  [cyan]/exit[/cyan]     — Exit (or empty answer)\n"
-        "  [cyan]any text[/cyan]  — Send feedback to agent",
+        "  [cyan]any text[/cyan]  — Send feedback to agent"
+        "[bold yellow] > [/bold yellow]",
         title="[bold yellow]User Feedback[/bold yellow]",
         border_style="yellow"
-    ))
+    ),
+        console=console,
+        default=""
+    )
     user_feedback = ask()
 
     return {
@@ -552,3 +566,4 @@ def create_agent():
     graph.add_conditional_edges("ask_user", route_after_answer)
 
     return graph.compile()
+
