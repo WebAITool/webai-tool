@@ -1,0 +1,10 @@
+{
+  "id": "feature-flask-api",
+  "name": "Add search and pagination to item API",
+  "category": "feature",
+  "difficulty": "medium",
+  "language": "python",
+  "framework": "flask",
+  "timeout_seconds": 120,
+  "max_agent_steps": 30
+}

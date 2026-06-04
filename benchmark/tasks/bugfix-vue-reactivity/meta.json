@@ -1,0 +1,10 @@
+{
+  "id": "bugfix-vue-reactivity",
+  "name": "Fix Vue 3 reactivity bug in form component",
+  "category": "bugfix",
+  "difficulty": "medium",
+  "language": "javascript",
+  "framework": "vue3",
+  "timeout_seconds": 60,
+  "max_agent_steps": 20
+}

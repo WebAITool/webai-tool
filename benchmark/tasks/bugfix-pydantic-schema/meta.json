@@ -1,0 +1,10 @@
+{
+  "id": "bugfix-pydantic-schema",
+  "name": "Fix Pydantic model validation and schema",
+  "category": "bugfix",
+  "difficulty": "medium",
+  "language": "python",
+  "framework": "pydantic",
+  "timeout_seconds": 120,
+  "max_agent_steps": 20
+}

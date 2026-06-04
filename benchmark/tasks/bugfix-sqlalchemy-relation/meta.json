@@ -1,0 +1,10 @@
+{
+  "id": "bugfix-sqlalchemy-relation",
+  "name": "Fix SQLAlchemy relationship cascade delete",
+  "category": "bugfix",
+  "difficulty": "medium",
+  "language": "python",
+  "framework": "sqlalchemy",
+  "timeout_seconds": 120,
+  "max_agent_steps": 25
+}

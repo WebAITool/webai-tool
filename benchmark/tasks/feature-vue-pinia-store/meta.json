@@ -1,0 +1,10 @@
+{
+  "id": "feature-vue-pinia-store",
+  "name": "Add Pinia store for API data management",
+  "category": "feature",
+  "difficulty": "medium",
+  "language": "javascript",
+  "framework": "vue3+pinia",
+  "timeout_seconds": 60,
+  "max_agent_steps": 25
+}

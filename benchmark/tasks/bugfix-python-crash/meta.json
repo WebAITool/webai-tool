@@ -1,0 +1,10 @@
+{
+  "id": "bugfix-python-crash",
+  "name": "Fix crash in user registration",
+  "category": "bugfix",
+  "difficulty": "easy",
+  "language": "python",
+  "framework": "fastapi",
+  "timeout_seconds": 120,
+  "max_agent_steps": 20
+}

@@ -1,0 +1,10 @@
+{
+  "id": "create-docker-setup",
+  "name": "Create Docker and Docker Compose configuration",
+  "category": "create",
+  "difficulty": "hard",
+  "language": "yaml",
+  "framework": "docker",
+  "timeout_seconds": 180,
+  "max_agent_steps": 35
+}

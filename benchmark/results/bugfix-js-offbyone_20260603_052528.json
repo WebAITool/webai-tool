@@ -1,0 +1,15 @@
+{
+  "task_id": "bugfix-js-offbyone",
+  "task_name": "Fix off-by-one error in array pagination",
+  "category": "bugfix",
+  "difficulty": "easy",
+  "success": false,
+  "tests_passed": 2,
+  "tests_failed": 5,
+  "tests_total": 7,
+  "test_output": "FAIL: page 1 returns first 3 items —  Expected [1,2,3], got [1,2]\nFAIL: page 2 returns next 3 items —  Expected [4,5,6], got [4,5]\nFAIL: page 3 returns items 7-9 —  Expected [7,8,9], got [7,8]\nPASS: page 4 returns last item\nPASS: page beyond range returns empty\nFAIL: page_size equals total length —  Expected [1,2,3,4,5,6,7,8,9,10], got [1,2,3,4,5,6,7,8,9]\nFAIL: single item pages —  Expected [3], got []\n",
+  "agent_steps": 0,
+  "time_seconds": 0,
+  "error": null,
+  "timestamp": "2026-06-03T05:25:28.812664"
+}

@@ -1,0 +1,10 @@
+{
+  "id": "create-cli-tool",
+  "name": "Create a file stats CLI tool",
+  "category": "create",
+  "difficulty": "medium",
+  "language": "python",
+  "framework": "",
+  "timeout_seconds": 120,
+  "max_agent_steps": 30
+}

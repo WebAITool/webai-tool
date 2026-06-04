@@ -1,0 +1,15 @@
+{
+  "task_id": "refactor-js-promises",
+  "task_name": "Refactor callback hell to async/await",
+  "category": "refactor",
+  "difficulty": "medium",
+  "success": false,
+  "tests_passed": 4,
+  "tests_failed": 1,
+  "tests_total": 5,
+  "test_output": "FAIL: getUserSummary exists and works — getUserSummary not found\nPASS: source uses async/await not .then chains\nPASS: fetchUserPosts for non-existent user fails\nPASS: findPopularPosts returns posts with enough likes\nPASS: fetchUserPosts returns user with posts\n",
+  "agent_steps": 0,
+  "time_seconds": 0,
+  "error": null,
+  "timestamp": "2026-06-03T05:26:40.551772"
+}

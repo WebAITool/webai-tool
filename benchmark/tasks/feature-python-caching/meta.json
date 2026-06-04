@@ -1,0 +1,10 @@
+{
+  "id": "feature-python-caching",
+  "name": "Add caching layer to data fetcher",
+  "category": "feature",
+  "difficulty": "medium",
+  "language": "python",
+  "framework": "",
+  "timeout_seconds": 120,
+  "max_agent_steps": 25
+}
