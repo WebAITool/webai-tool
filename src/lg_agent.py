@@ -1,225 +1,440 @@
 import os
+import ast
+import re
+import logging
 import dotenv
+import subprocess
+from typing import TypedDict, List
 from langchain_openai import ChatOpenAI
-from langchain_core.prompts import (
-    HumanMessagePromptTemplate,
-    SystemMessagePromptTemplate,
-    AIMessagePromptTemplate,
-    ChatPromptTemplate
-)
-from makesrs_prod import make_tree
-from langchain_core.messages import HumanMessage, AIMessage
-from langchain_core.messages import ToolMessage
-from langchain_core.output_parsers import StrOutputParser
-from typing import TypedDict, List, Annotated
-import operator
+from langchain_core.messages import SystemMessage, HumanMessage
 from langgraph.graph import StateGraph, END
-from lg_tools import shell_exec
-from langchain_experimental.utilities import PythonREPL
-from langchain_core.runnables import RunnableLambda
-from difflib import SequenceMatcher
-
+from ui import ask
 
 dotenv.load_dotenv()
+
 llm = ChatOpenAI(
-    # model_name="qwen/qwen3-coder",
-    model_name="z-ai/glm-4.7",
+    model_name="deepseek/deepseek-v4-flash",
     base_url="https://api.polza.ai/api/v1",
-    temperature=0.5,
+    temperature=0.3,
     api_key=os.getenv('API_KEY')
 )
 
+
 class AgentState(TypedDict):
     goal: str
-    actions: List[str]
-    plan: str
-    spec: str
-    thoughts: List[str]
-    knowledge: str
-    iter_cnt: int
-    max_steps: int
-    patience: int
-    action_memory_size: int
-    decision: str
-    wakeup: str
     prjdir: str
-    tree: str
-
-common_context = '''goal of the agent system is:\n{goal}\nend of the goal.\n
-        it is list of your last actions:\n{actions}\n
-        End of the action list.\n
-        'it is list of your recaps and plans until this moment:\n{thoughts}\n'
-        'End of the list.\n'
-        '\nThis is the specification of the project that you are currently work on:\n'
-        '{spec}'
-        '\nend of specification\n'
-        'current project file structure is:\n{tree}\n'
-        '''
+    chat_history: List[str]
+    current_plan: str
+    current_code: str
+    last_error: str
+    implementor_retries: int
+    iterations: int
+    max_steps: int
+    human_feedbacks: list[str]
 
 
-
-def think(state: AgentState):
-    sysmsg = SystemMessagePromptTemplate.from_template(
-        'you are thinking and planning agent of the agentic system')
-    usermsg = HumanMessagePromptTemplate.from_template(
-        common_context +
-        'you need to recap what you have done in one phrase and then plan in few detailed steps what to do next. '
-        'plan only thinks that can be done using python code snippets. But do not write any code, only plan!'
-        'and do not plan so much, only one step, that is closest to current project state'
-        'implementator agent will not see the specification, so plan should contain all necessary context to implement what was planned.'
-        'if task is to modify something, firstly you need to check what exactly you need to modify. '
-        'if you are sure that goal is achieved, say only [GOAL_ACHIEVED].'
-        'plan to create new components only when you are sure that existing components are tested and work well.'
-        'if you have realized that you sayed [GOAL_ACHIEVED] but goal is not achieved, say [NOT_ACHIEVED] and you will not end cycle'
-        '{wakeup}')
-    chat = ChatPromptTemplate.from_messages(([sysmsg, usermsg]))
-    chain = (chat | llm | StrOutputParser())
-    print('thinking...')
-    plan = chain.invoke(state)
-    print(plan)
-    return {'plan': plan, 'thoughts': state['thoughts'] + [plan]}
-
-
-def similarity(text_a: str, text_b: str) -> float:
-    return SequenceMatcher(None, text_a, text_b).ratio()
+IGNORE_DIRS = {
+    '.git',
+    '__pycache__',
+    'node_modules',
+    'venv',
+    'env',
+    '.venv',
+    'dist',
+    'build',
+    '.pytest_cache'}
+IGNORE_EXTS = {
+    '.pyc',
+    '.pyo',
+    '.pyd',
+    '.so',
+    '.dll',
+    '.exe',
+    '.jpg',
+    '.png',
+    '.gif',
+    '.pdf',
+    '.db',
+    '.sqlite3'}
 
 
-def state_check(state: AgentState):
-    retdict = {'iter_cnt': state['iter_cnt'] + 1,
-               'decision': 'code_action'
-               }
-    
-    if 'GOAL_ACHIEVED' in state['plan'] and 'NOT_TRUE' not in state['plan']:
-        retdict['decision'] = 'try_to_end'
-    if state['iter_cnt'] >= state['max_steps']:
-        retdict['decision'] = END
-    
-    retdict['actions'] = state['actions'][-state['action_memory_size']:]
-    slen = len(state['thoughts'])
-    if slen > 2 and similarity(state['thoughts'][slen - 1], state['thoughts'][slen - 2]) > 0.95:
-        print('SIMILARITY > 0.95! RESETTING THOUGHTS')
-        retdict['wakeup'] = 'you was repeated your last thought. WAKE UP! If action does not do anything, try different action, not be mad!' 
-        retdict['thoughts'] = ['Agent started repeating itself, thought list was cleared.']
-    else:
-        retdict['wakeup'] = ''
-    return retdict
+def extract_symbols(filepath):
+    ext = os.path.splitext(filepath)[1].lower()
+    symbols = []
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            content = f.read()
+
+        if ext == '.py':
+            tree = ast.parse(content)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ClassDef):
+                    symbols.append(f"class {node.name}")
+                elif isinstance(node, ast.FunctionDef):
+                    symbols.append(f"def {node.name}")
+        elif ext in {'.js', '.ts', '.vue'}:
+            class_matches = re.findall(
+                r'^[\s]*class\s+([a-zA-Z0-9_]+)', content, re.MULTILINE)
+            func_matches = re.findall(
+                r'^[\s]*(?:export\s+)?(?:async\s+)?function\s+([a-zA-Z0-9_]+)',
+                content,
+                re.MULTILINE)
+            const_func_matches = re.findall(
+                r'^[\s]*(?:export\s+)?const\s+([a-zA-Z0-9_]+)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[a-zA-Z0-9_]+)\s*=>',
+                content,
+                re.MULTILINE)
+
+            for m in class_matches:
+                symbols.append(f"class {m}")
+            for m in func_matches:
+                symbols.append(f"func {m}")
+            for m in const_func_matches:
+                symbols.append(f"func {m}")
+    except Exception:
+        pass
+
+    return symbols
 
 
-def try_to_end(state: AgentState):
-    sysmsg = SystemMessagePromptTemplate.from_template(
-        'you are thinking agent of the agentic system')
-    usermsg = HumanMessagePromptTemplate.from_template(
-        common_context +
-        'previous agent decided that your goal is achieved. Are you sure in this? Have you check and test everything works? Can user run your application?'
-        'answer YES or NO. But be carefull, if you answer YES, you will not be able'
-        'to do anything else, you lifecycle will be ended immediately.')
-    msglist = [sysmsg, usermsg]
-    while True:
-        chat = ChatPromptTemplate.from_messages(msglist)
-        chain = (chat | llm | StrOutputParser())
-        print('trying to end...')
-        answer = chain.invoke(state)
-        if 'YES' in answer:
-            return {'decision': END}
-        elif 'NO' in answer:
-            return {'decision': 'code_action'}
-        wrong_answer_msg = HumanMessagePromptTemplate.from_template(
-            'your answer is wrong. You should answer exactly YES or NO. Are you sure that your goal is achieved? Have you check and test everything?')
-        msglist.append(AIMessagePromptTemplate.from_template(answer))
-        msglist.append(wrong_answer_msg)
-            
+def make_tree(prjpath):
+    tree_str = ""
+    for root, dirs, files in os.walk(prjpath):
+        dirs[:] = [
+            d for d in dirs if d not in IGNORE_DIRS and not d.startswith('.')]
+        level = root.replace(prjpath, '').count(os.sep)
+        indent = ' ' * 4 * level
+        basename = os.path.basename(root)
+
+        if basename:
+            tree_str += f"{indent}{basename}/\n"
+
+        subindent = ' ' * 4 * (level + 1)
+        for f in files:
+            if f.startswith('.') or os.path.splitext(f)[
+                    1].lower() in IGNORE_EXTS:
+                continue
+
+            tree_str += f"{subindent}{f}\n"
+            symbols = extract_symbols(os.path.join(root, f))
+            for sym in symbols:
+                tree_str += f"{subindent}  - {sym}\n"
+
+    return tree_str.strip()
+
 
 def extract_code(text: str) -> str:
     if "```" in text:
         blocks = text.split("```")
-        if len(blocks) > 1:
-            code_block = blocks[1]
-            if code_block.strip().startswith("python"):
-                first_newline = code_block.find('\n')
+        for block in blocks[1:]:
+            if block.strip().startswith("python") or block.strip().startswith("py"):
+                first_newline = block.find('\n')
                 if first_newline != -1:
-                    code_block = code_block[first_newline:]
-                else:
-                    code_block = code_block.replace("python", "", 1)
-            elif code_block.strip().startswith("py"):
-                first_newline = code_block.find('\n')
-                if first_newline != -1:
-                    code_block = code_block[first_newline:]
-                else:
-                    code_block = code_block.replace("py", "", 1)
-            return code_block.strip()
+                    return block[first_newline:].strip()
+                return block.replace("python", "", 1).replace(
+                    "py", "", 1).strip()
     return text.strip()
 
-def code_action(state: AgentState):
-    sysmsg = SystemMessagePromptTemplate.from_template(
-        'you are code agent of the agent system')
-    usrmsg = HumanMessagePromptTemplate.from_template(
-        'specification of project you are working on is:\n{spec}\nend of specification.'
-        'goal of agentic system is\n{goal}\nend of the goal.'
-        'list of your previous actions is\n{actions}\nend of the list.'
-        'look at the plan from the thinker agent:\n{plan}\nend of plan.'
-        'You answer should be nothing except python code. If you can not do the plan, only print that you cant'
-        'This code can create files or folders, save file content in files, on anything else to complete the plan. Do as much as you can in one code block, it can be big enought to do all the plan'
-        'You answer should be nothing except python code (with proper formatting, ```python on start and ``` on the end)'
+
+def format_history(history: List[str]) -> str:
+    if not history:
+        return "No actions taken yet."
+    return "\n".join(history)
+
+
+def debug_llm_call(node_name: str, sys_prompt: str,
+                   user_prompt: str, response: str):
+    print(f"\n{'=' * 20} DEBUG: {node_name.upper()} {'=' * 20}")
+    print(f"--- SYSTEM PROMPT ---\n{sys_prompt}")
+
+    # Скрываем гигантское дерево файлов только для вывода в консоль
+    debug_user_prompt = re.sub(
+        r"(CURRENT FILE STRUCTURE & SYMBOLS:\n).*?(?=\n\n(ACTION HISTORY|LAST SCRIPT EXECUTION RESULT|TASK FROM ARCHITECT):)",
+        r"\1[FILE TREE OMITTED IN DEBUG LOGS...]\n",
+        user_prompt,
+        flags=re.DOTALL
     )
-    msglist = [sysmsg, usrmsg]
-    repl = PythonREPL()
-    action = ''
-    for i in range(state['patience']):
-        chat = ChatPromptTemplate.from_messages(msglist)
-        chain = (chat | llm | StrOutputParser() | RunnableLambda(extract_code))
-        print('code writing...')
-        code = chain.invoke(state)
-        sentinel = 'code was executed without any errors' 
-        print('code executing...')
-        console_out = repl.run(code + f'\nprint(\'{sentinel}\')')
-        if sentinel in console_out:
-            action += f'\nACTION:\nexecuted code:\n{code}\nresult:\n{console_out}\n'
+
+    print(f"--- USER PROMPT ---\n{debug_user_prompt}")
+    print(f"--- RAW RESPONSE ---\n{response}")
+    print(f"{'=' * 60}\n")
+
+
+def thinker(state: AgentState):
+    print("Thinker is analyzing the project...")
+    print('HISTORY ' + '\n'.join(state['chat_history']))
+
+    tree = make_tree(state['prjdir'])
+
+    sys_prompt = (
+        "You are the Architect agent of an autonomous coding system. "
+        "Your job is to analyze the current state of the project, read the user's goal, "
+        "and plan the SINGLE next logical step for the Implementor agent to execute.\n\n"
+        "RULES:\n"
+        "1. DO NOT write code. Write a clear, detailed instruction in plain English.\n"
+        "2. Only plan ONE step ahead that can be executed via a Python script.\n"
+        "3. DO NOT combine a plan with the completion signal. If actions are needed, write the plan.\n"
+        "4. CAREFULLY read the Console output of previous actions.\n"
+        "5. YOU ARE BLIND to file contents by default. You can instruct the Implementor to write a script that reads and prints the exact contents of that file to the console, so you can see it and decide what to do next.\n"
+        "6. If you are absolutely sure the user's goal is FULLY ACHIEVED and NO MORE ACTIONS are needed, output ONLY the exact string: [DONE]"
+    )
+
+    last_result = ""
+    if state['chat_history']:
+        last_result = f"LAST SCRIPT EXECUTION RESULT:\n{state['chat_history'][-1]}\n\n"
+        history_text = format_history(state['chat_history'][:-1])
+    else:
+        history_text = "No previous actions."
+
+    user_prompt = (
+        f"PROJECT DIRECTORY: {state['prjdir']}\n\n"
+        f"PROJECT GOAL:\n{state['goal']}\n\n"
+        f"CURRENT FILE STRUCTURE & SYMBOLS:\n{tree}\n\n"
+        f"ACTION HISTORY:\n{history_text}\n\n"
+        f"LIST OF FEEDBACKS FROM USER:\n{
+            '\n'.join(
+                state['human_feedbacks'])}\nEND OF LIST"
+        f"{last_result}"
+        "Based on the history, last execution result, and current structure, what is the exact next step? "
+        "If the goal is fully completed, reply with [DONE]."
+    )
+
+    messages = [
+        SystemMessage(content=sys_prompt),
+        HumanMessage(content=user_prompt)
+    ]
+
+    response = llm.invoke(messages)
+    plan = response.content.strip()
+
+    debug_llm_call("Thinker", sys_prompt, user_prompt, plan)
+
+    return {
+        "current_plan": plan,
+        "iterations": state["iterations"] + 1,
+        "implementor_retries": 0,
+        "last_error": ""
+    }
+
+
+def verify_completion(state: AgentState):
+    print("Verifying completion with Architect...")
+
+    sys_prompt = "You are the Architect agent."
+    user_prompt = (
+        f"PROJECT GOAL:\n{state['goal']}\n\n"
+        f"ACTION HISTORY:\n{format_history(state['chat_history'])}\n\n"
+        "You indicated that the goal is [DONE]. "
+        "Review the action history. Have the required changes been successfully applied to the codebase? "
+        "Reply EXACTLY with 'YES' to confirm completion and stop the agent, or 'NO' if a critical step was missed."
+    )
+
+    messages = [
+        SystemMessage(
+            content=sys_prompt), HumanMessage(
+            content=user_prompt)]
+    response = llm.invoke(messages)
+    answer = response.content.strip()
+
+    debug_llm_call("Verify Completion", sys_prompt, user_prompt, answer)
+
+    answer_upper = answer.upper()
+    if "YES" in answer_upper:
+        return {"current_plan": "[CONFIRMED_DONE]"}
+    else:
+        return {
+            "current_plan": "Previous completion check failed. Architect realized more work is needed.",
+            "chat_history": state["chat_history"] + ["Architect tried to finish, but realized the goal is not fully achieved yet."]
+        }
+
+
+def implementor(state: AgentState):
+    print(
+        f"Implementor is writing code (Attempt {
+            state['implementor_retries'] +
+            1})...")
+
+    tree = make_tree(state['prjdir'])
+
+    sys_prompt = (
+        "You are the Implementor agent. Your job is to write a Python script "
+        "that executes the task requested by the Architect.\n\n"
+        "RULES:\n"
+        "1. Output ONLY valid Python code wrapped in ```python ... ``` block.\n"
+        "2. Do not explain the code. Just write it.\n"
+        "3. The script will be executed directly in the project root directory. Use RELATIVE paths.\n"
+        "4. Use standard libraries (os, shutil, re, etc.) to read, create, or modify files.\n"
+        "5. NEVER fail silently. If you cannot find a file, a class, or a specific string pattern to modify, "
+        "you MUST raise an exception (e.g., raise ValueError('Could not find class X')) or use sys.exit(1). "
+        "Do not just print an error and return."
+    )
+
+    last_result = ""
+    if state['chat_history']:
+        last_result = f"LAST SCRIPT EXECUTION RESULT:\n{state['chat_history'][-1]}\n\n"
+
+    user_prompt = (
+        f"CURRENT FILE STRUCTURE & SYMBOLS:\n{tree}\n\n"
+        f"{last_result}"
+        f"TASK FROM ARCHITECT:\n{state['current_plan']}\n"
+    )
+
+    if state.get("last_error"):
+        user_prompt += (
+            "\nWARNING! Your previous code attempt failed with this error:\n"
+            f"{state['last_error']}\n"
+            "Read the traceback carefully, fix the code, and try again."
+        )
+
+    messages = [
+        SystemMessage(content=sys_prompt),
+        HumanMessage(content=user_prompt)
+    ]
+
+    response = llm.invoke(messages)
+    code = extract_code(response.content)
+
+    debug_llm_call("Implementor", sys_prompt, user_prompt, response.content)
+
+    return {"current_code": code}
+
+
+def execute_code(state: AgentState):
+    print("Executing generated code...")
+    code = state['current_code']
+    prjdir = state['prjdir']
+
+    temp_script_path = os.path.join(prjdir, '.agent_script.py')
+
+    try:
+        with open(temp_script_path, 'w', encoding='utf-8') as f:
+            f.write(code)
+
+        result = subprocess.run(
+            ["python", ".agent_script.py"],
+            cwd=prjdir,
+            capture_output=True,
+            text=True
+        )
+
+        stdout = result.stdout.strip()
+        stderr = result.stderr.strip()
+
+        if result.returncode == 0:
+            print("Execution successful.")
+            log_entry = f"Architect planned: '{state['current_plan'][:100]}...'\nResult: SUCCESS.\nConsole: {stdout[:10000]}"
             return {
-                'actions': state['actions'] + [action], 
-                'tree': make_tree(state['prjdir'])
-                }
-        msglist.append(AIMessage(code))
-        error_report = HumanMessage(
-            'there was some errors in your code, here is execution logs:\n' + console_out)
-        print('ERROR: ', console_out)
-        msglist.append(error_report)
+                "chat_history": state["chat_history"] + [log_entry],
+                "last_error": "",
+                "implementor_retries": 0
+            }
+        else:
+            error_report = "Execution failed with non-zero exit code.\n"
+            if stdout:
+                error_report += f"\n--- STDOUT ---\n{stdout[:10000]}\n"
+            if stderr:
+                error_report += f"\n--- STDERR (Traceback) ---\n{stderr[:10000]}\n"
 
-    return {'actions': state['actions'] + ['\nACTION\ncode was not executed, too many failed attempts for code agent']}
-
-
-def get_initial_state(goal: str, spec: str, prjdir:str, max_steps: int, patience=5, action_memory_size=5):
-    return AgentState({
-        'action_memory_size': action_memory_size,
-        'actions': [],
-        'decision': '',
-        'goal': goal,
-        'prjdir': prjdir,
-        'iter_cnt': 0,
-        'knowledge': '',
-        'max_steps': max_steps,
-        'patience': patience,
-        'plan': '',
-        'spec': spec,
-        'thoughts': [],
-        'wakeup': '',
-        'tree': ''
-    })
-
-graph = StateGraph(state_schema=AgentState)
-nodefuncs = [think, state_check, try_to_end, code_action]
-for node in nodefuncs:
-    graph.add_node(node.__name__, node)
-graph.add_edge('think', 'state_check')
-graph.add_conditional_edges('state_check', lambda state: state['decision'])
-graph.add_conditional_edges('try_to_end', lambda state: state['decision'])
-graph.add_edge('code_action', 'think')
-graph.set_entry_point('think')
-agent = graph.compile()
-config = {"recursion_limit": 200}
+            print(f"Execution failed:\n{error_report}")
+            return {
+                "last_error": error_report,
+                "implementor_retries": state["implementor_retries"] + 1
+            }
+    finally:
+        if os.path.exists(temp_script_path):
+            os.remove(temp_script_path)
 
 
-def run_agent(goal, spec, max_steps=30):
-    initial_state = get_initial_state(goal, spec, max_steps=max_steps)
-    agent.invoke(initial_state)
+def route_after_thinker(state: AgentState):
+    plan = state["current_plan"]
 
-# run_agent('built simple and nice betting web application in folder 4xbet')
+    if "[DONE]" in plan:
+        clean_plan = plan.replace("[DONE]", "").strip()
+        if len(clean_plan) > 50:
+            print(
+                "Thinker included [DONE] inside a larger plan. Routing to Implementor instead of finishing.")
+            return "implementor"
+        else:
+            return "verify_completion"
+
+    if state["iterations"] >= state["max_steps"]:
+        print("Max iterations reached. Stopping.")
+        return END
+
+    return "implementor"
+
+
+def ask_user(state: AgentState):
+    print('Now you can give feedback to agent.\n'
+          'If you want to leave, give an empty answer or write /exit, /quit or /q')
+    user_feedback = ask()
+
+    return {
+        'human_feedbacks': state['human_feedbacks'] + [user_feedback]
+    }
+
+
+def route_after_answer(state: AgentState):
+    last = state['human_feedbacks'][-1]
+    if len(last) == 0 or last == '/exit' or last == '/quit' or last == '/q':
+        return END
+
+    return 'thinker'
+
+
+def route_after_verification(state: AgentState):
+    if "[CONFIRMED_DONE]" in state["current_plan"]:
+        print("Goal confirmed as achieved.")
+        return "ask_user"
+    else:
+        print("Architect decided to continue working...")
+        return "thinker"
+
+
+def route_after_execution(state: AgentState):
+    if state.get("last_error"):
+        if state["implementor_retries"] < 1:
+            print("Implementor looping to fix error...")
+            return "implementor"
+        else:
+            print("Implementor failed 3 times. Returning to Thinker for a new plan...")
+            fail_log = f"Architect planned: '{state['current_plan'][:100]}...'\nResult: FAILED completely after 3 attempts. Last error: {state['last_error'][:300]}"
+            state["chat_history"].append(fail_log)
+            return "thinker"
+
+    return "thinker"
+
+
+def get_initial_state(goal: str, prjdir: str,
+                      max_steps: int = 30) -> AgentState:
+    return {
+        "goal": goal,
+        "prjdir": prjdir,
+        "chat_history": [],
+        "current_plan": "",
+        "current_code": "",
+        "last_error": "",
+        "implementor_retries": 0,
+        "iterations": 0,
+        "max_steps": max_steps,
+        "human_feedbacks": []
+    }
+
+
+def create_agent():
+    graph = StateGraph(state_schema=AgentState)
+
+    graph.add_node("thinker", thinker)
+    graph.add_node("implementor", implementor)
+    graph.add_node("execute_code", execute_code)
+    graph.add_node("verify_completion", verify_completion)
+    graph.add_node("ask_user", ask_user)
+
+    graph.set_entry_point("thinker")
+
+    graph.add_conditional_edges("thinker", route_after_thinker)
+    graph.add_conditional_edges("verify_completion", route_after_verification)
+    graph.add_edge("implementor", "execute_code")
+    graph.add_conditional_edges("execute_code", route_after_execution)
+    graph.add_conditional_edges("ask_user", route_after_answer)
+
+    return graph.compile()

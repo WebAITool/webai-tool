@@ -1,0 +1,12 @@
+.venv
+**/.env
+**/__pycache__
+**/.logs
+**/pyrightconfig.json
+generated
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+*.pyc
+.coverage
