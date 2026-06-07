@@ -1,0 +1,10 @@
+{
+  "id": "bugfix-vuetify-component",
+  "name": "Fix missing Vuetify CSS import",
+  "category": "bugfix",
+  "difficulty": "easy",
+  "language": "javascript",
+  "framework": "vue3+vuetify3",
+  "timeout_seconds": 60,
+  "max_agent_steps": 5
+}

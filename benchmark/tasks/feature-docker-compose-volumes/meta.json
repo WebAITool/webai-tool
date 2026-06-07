@@ -1,0 +1,10 @@
+{
+  "id": "feature-docker-compose-volumes",
+  "name": "Add docker-compose with development volumes",
+  "category": "feature",
+  "difficulty": "medium",
+  "language": "yaml",
+  "framework": "docker",
+  "timeout_seconds": 120,
+  "max_agent_steps": 15
+}

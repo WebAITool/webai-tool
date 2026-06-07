@@ -1,0 +1,10 @@
+{
+  "id": "feature-vue-router",
+  "name": "Add Vue Router navigation",
+  "category": "feature",
+  "difficulty": "medium",
+  "language": "javascript",
+  "framework": "vue3+vuerouter",
+  "timeout_seconds": 120,
+  "max_agent_steps": 15
+}

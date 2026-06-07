@@ -1,0 +1,15 @@
+{
+  "task_id": "bugfix-sqlalchemy-query",
+  "task_name": "Fix incorrect SQLAlchemy query syntax",
+  "category": "bugfix",
+  "difficulty": "easy",
+  "success": false,
+  "tests_passed": 1,
+  "tests_failed": 4,
+  "tests_total": 5,
+  "test_output": "============================= test session starts =============================\nplatform win32 -- Python 3.14.3, pytest-9.0.3, pluggy-1.6.0 -- C:\\Python314\\python.exe\ncachedir: .pytest_cache\nrootdir: c:\\IMPORTANT\\NSU\\3\\shc\\github_clones\\webai-tool\nconfigfile: pyproject.toml\nplugins: anyio-4.13.0, langsmith-0.7.33\ncollecting ... collected 5 items\n\ntests\\test_queries.py::test_get_user_by_email_finds_user FAILED          [ 20%]\ntests\\test_queries.py::test_get_user_by_email_returns_none PASSED        [ 40%]\ntests\\test_queries.py::test_get_active_users_returns_only_active FAILED  [ 60%]\ntests\\test_queries.py::test_count_active_users FAILED                    [ 80%]\ntests\\test_queries.py::test_search_users_returns_matching FAILED         [100%]\n\n================================== FAILURES ===================================\n______________________ test_get_user_by_email_finds_user ______________________\ntests\\test_queries.py:24: in test_get_user_by_email_finds_user\n    assert user is not None\nE   assert None is not None\n__________________ test_get_active_users_returns_only_active __________________\ntests\\test_queries.py:34: in test_get_active_users_returns_only_active\n    users = get_active_users()\n            ^^^^^^^^^^^^^^^^^^\nmodels.py:28: in get_active_users\n    return session.query(User).filter(active=True).all()\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nE   TypeError: Query.filter() got an unexpected keyword argument 'active'\n___________________________ test_count_active_users ___________________________\ntests\\test_queries.py:41: in test_count_active_users\n    assert count == 2\nE   assert 0 == 2\n_____________________ test_search_users_returns_matching ______________________\ntests\\test_queries.py:45: in test_search_users_returns_matching\n    users = search_users(\"ali\")\n            ^^^^^^^^^^^^^^^^^^^\nmodels.py:32: in search_users\n    return session.query(User).filter(User.name.contains(query)).all()\n                                      ^^^^^^^^^\nE   AttributeError: type object 'User' has no attribute 'name'\n=========================== short test summary info ===========================\nFAILED tests\\test_queries.py::test_get_user_by_email_finds_user - assert None...\nFAILED tests\\test_queries.py::test_get_active_users_returns_only_active - Typ...\nFAILED tests\\test_queries.py::test_count_active_users - assert 0 == 2\nFAILED tests\\test_queries.py::test_search_users_returns_matching - AttributeE...\n========================= 4 failed, 1 passed in 0.86s =========================\n",
+  "agent_steps": 5,
+  "time_seconds": 90.35806059837341,
+  "error": null,
+  "timestamp": "2026-06-06T22:23:27.195563"
+}

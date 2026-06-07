@@ -1,0 +1,10 @@
+{
+  "id": "bugfix-cors-frontend",
+  "name": "Fix Vite proxy to communicate with FastAPI backend",
+  "category": "bugfix",
+  "difficulty": "easy",
+  "language": "javascript",
+  "framework": "vite+fastapi",
+  "timeout_seconds": 60,
+  "max_agent_steps": 5
+}

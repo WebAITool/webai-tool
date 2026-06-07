@@ -1,0 +1,15 @@
+{
+  "task_id": "feature-vue-router",
+  "task_name": "Add Vue Router navigation",
+  "category": "feature",
+  "difficulty": "medium",
+  "success": true,
+  "tests_passed": 7,
+  "tests_failed": 0,
+  "tests_total": 7,
+  "test_output": "file:///c:/IMPORTANT/NSU/3/shc/github_clones/webai-tool/benchmark/workspaces/feature-vue-router/tests/test_router.js:1\nconst fs = require('fs')\n           ^\n\nReferenceError: require is not defined in ES module scope, you can use import instead\nThis file is being treated as an ES module because it has a '.js' file extension and 'c:\\IMPORTANT\\NSU\\3\\shc\\github_clones\\webai-tool\\benchmark\\workspaces\\feature-vue-router\\package.json' contains \"type\": \"module\". To treat it as a CommonJS script, rename it to use the '.cjs' file extension.\n    at file:///c:/IMPORTANT/NSU/3/shc/github_clones/webai-tool/benchmark/workspaces/feature-vue-router/tests/test_router.js:1:12\n    at ModuleJob.run (node:internal/modules/esm/module_job:430:25)\n    at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:661:26)\n    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:101:5)\n\nNode.js v24.14.0\n\nPASS: router/index.js exists\nPASS: router/index.js defines routes\nPASS: App.vue uses router-link\nPASS: App.vue has router-view\nPASS: main.js registers router\nPASS: Contact.vue exists\nPASS: Contact.vue has template\n",
+  "agent_steps": 9,
+  "time_seconds": 167.01905345916748,
+  "error": null,
+  "timestamp": "2026-06-07T00:31:33.929611"
+}

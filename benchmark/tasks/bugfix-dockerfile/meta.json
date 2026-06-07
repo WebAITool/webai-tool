@@ -1,0 +1,10 @@
+{
+  "id": "bugfix-dockerfile",
+  "name": "Fix Dockerfile build errors",
+  "category": "bugfix",
+  "difficulty": "easy",
+  "language": "dockerfile",
+  "framework": "docker",
+  "timeout_seconds": 120,
+  "max_agent_steps": 5
+}

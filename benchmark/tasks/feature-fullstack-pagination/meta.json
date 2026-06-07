@@ -1,0 +1,10 @@
+{
+  "id": "feature-fullstack-pagination",
+  "name": "Add pagination on frontend and backend",
+  "category": "feature",
+  "difficulty": "medium",
+  "language": "python",
+  "framework": "fastapi+vue3",
+  "timeout_seconds": 120,
+  "max_agent_steps": 20
+}

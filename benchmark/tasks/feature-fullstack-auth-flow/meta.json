@@ -1,0 +1,10 @@
+{
+  "id": "feature-fullstack-auth-flow",
+  "name": "Add JWT auth flow on frontend and backend",
+  "category": "feature",
+  "difficulty": "hard",
+  "language": "python",
+  "framework": "fastapi+vue3",
+  "timeout_seconds": 180,
+  "max_agent_steps": 30
+}

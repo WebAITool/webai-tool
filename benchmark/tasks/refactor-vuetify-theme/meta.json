@@ -1,0 +1,10 @@
+{
+  "id": "refactor-vuetify-theme",
+  "name": "Add custom Vuetify theme with dark mode toggle",
+  "category": "refactor",
+  "difficulty": "hard",
+  "language": "javascript",
+  "framework": "vue3+vuetify3",
+  "timeout_seconds": 120,
+  "max_agent_steps": 20
+}

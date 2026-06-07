@@ -1,0 +1,10 @@
+{
+  "id": "bugfix-sqlalchemy-query",
+  "name": "Fix incorrect SQLAlchemy query syntax",
+  "category": "bugfix",
+  "difficulty": "easy",
+  "language": "python",
+  "framework": "sqlalchemy",
+  "timeout_seconds": 60,
+  "max_agent_steps": 5
+}

@@ -1,0 +1,10 @@
+{
+  "id": "feature-fastapi-middleware",
+  "name": "Add request logging middleware",
+  "category": "feature",
+  "difficulty": "medium",
+  "language": "python",
+  "framework": "fastapi",
+  "timeout_seconds": 60,
+  "max_agent_steps": 15
+}

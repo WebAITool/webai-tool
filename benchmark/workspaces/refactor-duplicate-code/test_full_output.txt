@@ -1,0 +1,87 @@
+============================= test session starts =============================
+platform win32 -- Python 3.14.3, pytest-9.0.3, pluggy-1.6.0 -- C:\Python314\python.exe
+cachedir: .pytest_cache
+rootdir: c:\IMPORTANT\NSU\3\shc\github_clones\webai-tool
+configfile: pyproject.toml
+plugins: anyio-4.13.0, langsmith-0.7.33
+collecting ... collected 17 items
+
+tests\test_validators.py::test_validate_name_valid PASSED                [  5%]
+tests\test_validators.py::test_validate_name_none PASSED                 [ 11%]
+tests\test_validators.py::test_validate_name_too_short PASSED            [ 17%]
+tests\test_validators.py::test_name_type_error PASSED                    [ 23%]
+tests\test_validators.py::test_validate_email_valid PASSED               [ 29%]
+tests\test_validators.py::test_validate_email_invalid_format PASSED      [ 35%]
+tests\test_validators.py::test_validate_email_none PASSED                [ 41%]
+tests\test_validators.py::test_validate_age_valid PASSED                 [ 47%]
+tests\test_validators.py::test_validate_age_negative PASSED              [ 52%]
+tests\test_validators.py::test_validate_age_type_error PASSED            [ 58%]
+tests\test_validators.py::test_validate_phone_valid PASSED               [ 64%]
+tests\test_validators.py::test_validate_phone_invalid_format FAILED      [ 70%]
+tests\test_validators.py::test_validate_phone_none PASSED                [ 76%]
+tests\test_validators.py::test_validate_username_exists PASSED           [ 82%]
+tests\test_validators.py::test_validate_username_valid PASSED            [ 88%]
+tests\test_validators.py::test_validate_username_none PASSED             [ 94%]
+tests\test_validators.py::test_validator_base_class_exists PASSED        [100%]
+
+================================== FAILURES ===================================
+_____________________ test_validate_phone_invalid_format ______________________
+
+    def test_validate_phone_invalid_format():
+        v = _import_validators()
+        with pytest.raises(ValueError, match="phone format"):
+>           v.validate_phone("abc")
+
+..\..\tasks\refactor-duplicate-code\tests\test_validators.py:87: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+value = 'abc'
+
+    def validate_phone(value):
+>       return _phone_validator.validate(value)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+project\validators.py:84: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <validators.StringValidator object at 0x000001F5D5FCFD90>, value = 'abc'
+
+    def validate(self, value):
+        if self.required and value is None:
+            raise ValueError(f"{self.name} is required")
+        if self.type_ is not None and not isinstance(value, self.type_):
+            if self.type_ == str:
+                raise TypeError("must be a string")
+            elif self.type_ == int:
+                raise TypeError("must be an integer")
+            else:
+                raise TypeError(f"{self.name} must be a {self.type_.__name__}")
+>       self.check_constraints(value)
+
+project\validators.py:20: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <validators.StringValidator object at 0x000001F5D5FCFD90>, value = 'abc'
+
+    def check_constraints(self, value):
+        if self.min_length is not None and len(value) < self.min_length:
+>           raise ValueError(f"{self.name} must be at least {self.min_length} characters")
+E           ValueError: phone must be at least 7 characters
+
+project\validators.py:36: ValueError
+
+During handling of the above exception, another exception occurred:
+
+    def test_validate_phone_invalid_format():
+        v = _import_validators()
+>       with pytest.raises(ValueError, match="phone format"):
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       AssertionError: Regex pattern did not match.
+E         Expected regex: 'phone format'
+E         Actual message: 'phone must be at least 7 characters'
+
+..\..\tasks\refactor-duplicate-code\tests\test_validators.py:86: AssertionError
+=========================== short test summary info ===========================
+FAILED tests\test_validators.py::test_validate_phone_invalid_format - Asserti...
+======================== 1 failed, 16 passed in 0.11s =========================
+
