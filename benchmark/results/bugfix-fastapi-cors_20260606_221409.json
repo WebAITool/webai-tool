@@ -1,0 +1,15 @@
+{
+  "task_id": "bugfix-fastapi-cors",
+  "task_name": "Fix FastAPI CORS middleware configuration",
+  "category": "bugfix",
+  "difficulty": "easy",
+  "success": true,
+  "tests_passed": 6,
+  "tests_failed": 0,
+  "tests_total": 6,
+  "test_output": "============================= test session starts =============================\nplatform win32 -- Python 3.14.3, pytest-9.0.3, pluggy-1.6.0 -- C:\\Python314\\python.exe\ncachedir: .pytest_cache\nrootdir: c:\\IMPORTANT\\NSU\\3\\shc\\github_clones\\webai-tool\nconfigfile: pyproject.toml\nplugins: anyio-4.13.0, langsmith-0.7.33\ncollecting ... collected 6 items\n\ntests\\test_cors.py::test_cors_has_specific_origins PASSED                [ 16%]\ntests\\test_cors.py::test_cors_allows_vue_dev_origin PASSED               [ 33%]\ntests\\test_cors.py::test_cors_allows_put_method PASSED                   [ 50%]\ntests\\test_cors.py::test_cors_allows_delete_method PASSED                [ 66%]\ntests\\test_cors.py::test_cors_allows_authorization_header PASSED         [ 83%]\ntests\\test_cors.py::test_routes_still_work PASSED                        [100%]\n\n============================== 6 passed in 0.29s ==============================\n",
+  "agent_steps": 15,
+  "time_seconds": 383.6927487850189,
+  "error": null,
+  "timestamp": "2026-06-06T22:14:09.161985"
+}

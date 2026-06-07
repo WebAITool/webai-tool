@@ -1,0 +1,10 @@
+{
+  "id": "feature-docker-multi-stage",
+  "name": "Add multi-stage Docker builds and production compose",
+  "category": "feature",
+  "difficulty": "hard",
+  "language": "yaml",
+  "framework": "docker",
+  "timeout_seconds": 180,
+  "max_agent_steps": 20
+}

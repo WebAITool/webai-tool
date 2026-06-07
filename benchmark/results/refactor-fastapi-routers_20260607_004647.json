@@ -1,0 +1,15 @@
+{
+  "task_id": "refactor-fastapi-routers",
+  "task_name": "Split monolithic FastAPI app into routers",
+  "category": "refactor",
+  "difficulty": "medium",
+  "success": true,
+  "tests_passed": 10,
+  "tests_failed": 0,
+  "tests_total": 10,
+  "test_output": "============================= test session starts =============================\nplatform win32 -- Python 3.14.3, pytest-9.0.3, pluggy-1.6.0 -- C:\\Python314\\python.exe\ncachedir: .pytest_cache\nrootdir: c:\\IMPORTANT\\NSU\\3\\shc\\github_clones\\webai-tool\nconfigfile: pyproject.toml\nplugins: anyio-4.13.0, langsmith-0.7.33\ncollecting ... collected 10 items\n\ntests\\test_routers.py::test_health_endpoint PASSED                       [ 10%]\ntests\\test_routers.py::test_root_endpoint PASSED                         [ 20%]\ntests\\test_routers.py::test_user_crud PASSED                             [ 30%]\ntests\\test_routers.py::test_item_crud PASSED                             [ 40%]\ntests\\test_routers.py::test_app_package_exists PASSED                    [ 50%]\ntests\\test_routers.py::test_routers_package_exists PASSED                [ 60%]\ntests\\test_routers.py::test_health_router_file_exists PASSED             [ 70%]\ntests\\test_routers.py::test_users_router_file_exists PASSED              [ 80%]\ntests\\test_routers.py::test_items_router_file_exists PASSED              [ 90%]\ntests\\test_routers.py::test_routers_use_api_router PASSED                [100%]\n\n============================= 10 passed in 0.39s ==============================\n",
+  "agent_steps": 7,
+  "time_seconds": 94.99509739875793,
+  "error": null,
+  "timestamp": "2026-06-07T00:46:47.010150"
+}

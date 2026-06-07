@@ -1,0 +1,15 @@
+{
+  "task_id": "bugfix-dockerfile",
+  "task_name": "Fix Dockerfile build errors",
+  "category": "bugfix",
+  "difficulty": "easy",
+  "success": true,
+  "tests_passed": 5,
+  "tests_failed": 0,
+  "tests_total": 5,
+  "test_output": "============================= test session starts =============================\nplatform win32 -- Python 3.14.3, pytest-9.0.3, pluggy-1.6.0 -- C:\\Python314\\python.exe\ncachedir: .pytest_cache\nrootdir: c:\\IMPORTANT\\NSU\\3\\shc\\github_clones\\webai-tool\nconfigfile: pyproject.toml\nplugins: anyio-4.13.0, langsmith-0.7.33\ncollecting ... collected 5 items\n\ntests\\test_dockerfile.py::test_dockerfile_exists PASSED                  [ 20%]\ntests\\test_dockerfile.py::test_dockerfile_has_correct_workdir PASSED     [ 40%]\ntests\\test_dockerfile.py::test_dockerfile_copies_correct_path PASSED     [ 60%]\ntests\\test_dockerfile.py::test_dockerfile_has_run_instruction PASSED     [ 80%]\ntests\\test_dockerfile.py::test_dockerfile_has_correct_cmd PASSED         [100%]\n\n============================== 5 passed in 0.03s ==============================\n",
+  "agent_steps": 5,
+  "time_seconds": 71.24598526954651,
+  "error": null,
+  "timestamp": "2026-06-06T22:07:37.498958"
+}

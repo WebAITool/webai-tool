@@ -8,6 +8,13 @@ from fastapi.testclient import TestClient
 def client():
     # Must import from the new app package
     import importlib
+    import sys
+    from pathlib import Path
+    
+    # Add project directory to sys.path
+    project_dir = Path(__file__).parent.parent / "project"
+    sys.path.append(str(project_dir))
+    
     try:
         import app as app_pkg
         importlib.reload(app_pkg)
@@ -62,7 +69,6 @@ def test_item_crud(client):
 def test_app_package_exists():
     """app/ package should exist after refactor."""
     from pathlib import Path
-    import os
     project_dir = Path(__file__).parent.parent / "project"
     assert (project_dir / "app" / "__init__.py").exists(), "app/__init__.py not found"
 
@@ -98,7 +104,7 @@ def test_items_router_file_exists():
 def test_routers_use_api_router():
     """Router files should use APIRouter."""
     from pathlib import Path
-    project_dir = Path(__file__).parent.parent / "project"
+    project_dir = Path(__file__).parent.parent
     for name in ["health.py", "users.py", "items.py"]:
         path = project_dir / "app" / "routers" / name
         if path.exists():

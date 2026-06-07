@@ -1,0 +1,10 @@
+{
+  "id": "feature-fastapi-websocket",
+  "name": "Add WebSocket endpoint for real-time notifications",
+  "category": "feature",
+  "difficulty": "hard",
+  "language": "python",
+  "framework": "fastapi",
+  "timeout_seconds": 120,
+  "max_agent_steps": 20
+}

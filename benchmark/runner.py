@@ -220,7 +220,7 @@ class BenchmarkRunner:
         }
 
     def _run_js_verification(self, workspace: Path, timeout: int) -> Dict[str, Any]:
-        test_files = list((workspace / "tests").glob("test_*.js")) + list((workspace / "tests").glob("*_test.js"))
+        test_files = list((workspace / "tests").glob("test_*.js")) + list((workspace / "tests").glob("*_test.js")) + list((workspace / "tests").glob("test_*.cjs")) + list((workspace / "tests").glob("*_test.cjs"))
         if not test_files:
             return {"passed": 0, "failed": 0, "total": 0, "output": "No JS test files found", "success": False}
 
@@ -273,6 +273,17 @@ class BenchmarkRunner:
 
         os.environ['BENCHMARK_MODE'] = '1'
         os.environ['PYTHONIOENCODING'] = 'utf-8'
+
+        if hasattr(sys.stdout, 'reconfigure'):
+            try:
+                sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+            except Exception:
+                pass
+        if hasattr(sys.stderr, 'reconfigure'):
+            try:
+                sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+            except Exception:
+                pass
 
         try:
             from lg_agent import create_agent, get_initial_state

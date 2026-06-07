@@ -1,13 +1,13 @@
-"""Synchronous file reader — needs async refactor."""
+import asyncio
+import aiofiles
 import os
 import re
 from typing import List, Dict, Optional
 
-
 class FileReader:
-    def read_file(self, path: str) -> str:
-        with open(path, "r", encoding="utf-8") as f:
-            return f.read()
+    async def read_file(self, path: str) -> str:
+        async with aiofiles.open(path, "r", encoding="utf-8") as f:
+            return await f.read()
 
     def list_files(self, directory: str) -> List[str]:
         result = []
@@ -17,18 +17,18 @@ class FileReader:
                 result.append(full)
         return result
 
-    def search_in_file(self, path: str, pattern: str) -> List[int]:
-        """Return line numbers where pattern matches."""
-        content = self.read_file(path)
+    async def search_in_file(self, path: str, pattern: str) -> List[int]:
+        content = await self.read_file(path)
         lines = content.splitlines()
         return [i + 1 for i, line in enumerate(lines) if re.search(pattern, line)]
 
-    def batch_read(self, paths: List[str]) -> Dict[str, str]:
-        """Read multiple files sequentially — SLOW."""
+    async def batch_read(self, paths: List[str]) -> Dict[str, str]:
+        tasks = [self.read_file(path) for path in paths]
+        contents = await asyncio.gather(*tasks, return_exceptions=True)
         results = {}
-        for path in paths:
-            try:
-                results[path] = self.read_file(path)
-            except FileNotFoundError:
+        for path, content in zip(paths, contents):
+            if isinstance(content, Exception):
                 results[path] = None
+            else:
+                results[path] = content
         return results

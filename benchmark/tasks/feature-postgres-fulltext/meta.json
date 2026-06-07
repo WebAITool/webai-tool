@@ -1,0 +1,10 @@
+{
+  "id": "feature-postgres-fulltext",
+  "name": "Add PostgreSQL full-text search with SQLAlchemy",
+  "category": "feature",
+  "difficulty": "hard",
+  "language": "python",
+  "framework": "sqlalchemy+postgres",
+  "timeout_seconds": 120,
+  "max_agent_steps": 20
+}

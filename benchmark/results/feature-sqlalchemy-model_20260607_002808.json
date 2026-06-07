@@ -1,0 +1,15 @@
+{
+  "task_id": "feature-sqlalchemy-model",
+  "task_name": "Add SQLAlchemy models for project management",
+  "category": "feature",
+  "difficulty": "medium",
+  "success": true,
+  "tests_passed": 10,
+  "tests_failed": 0,
+  "tests_total": 10,
+  "test_output": "============================= test session starts =============================\nplatform win32 -- Python 3.14.3, pytest-9.0.3, pluggy-1.6.0 -- C:\\Python314\\python.exe\ncachedir: .pytest_cache\nrootdir: c:\\IMPORTANT\\NSU\\3\\shc\\github_clones\\webai-tool\nconfigfile: pyproject.toml\nplugins: anyio-4.13.0, langsmith-0.7.33\ncollecting ... collected 10 items\n\ntests\\test_models.py::test_project_model_exists PASSED                   [ 10%]\ntests\\test_models.py::test_task_model_exists PASSED                      [ 20%]\ntests\\test_models.py::test_create_project PASSED                         [ 30%]\ntests\\test_models.py::test_project_to_dict PASSED                        [ 40%]\ntests\\test_models.py::test_create_task PASSED                            [ 50%]\ntests\\test_models.py::test_task_to_dict PASSED                           [ 60%]\ntests\\test_models.py::test_project_cascade_deletes_tasks PASSED          [ 70%]\ntests\\test_models.py::test_user_has_projects_relationship PASSED         [ 80%]\ntests\\test_models.py::test_user_has_assigned_tasks PASSED                [ 90%]\ntests\\test_models.py::test_existing_models_still_work PASSED             [100%]\n\n============================= 10 passed in 0.78s ==============================\n",
+  "agent_steps": 5,
+  "time_seconds": 152.85733199119568,
+  "error": null,
+  "timestamp": "2026-06-07T00:28:08.296250"
+}

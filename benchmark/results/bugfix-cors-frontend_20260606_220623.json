@@ -1,0 +1,15 @@
+{
+  "task_id": "bugfix-cors-frontend",
+  "task_name": "Fix Vite proxy to communicate with FastAPI backend",
+  "category": "bugfix",
+  "difficulty": "easy",
+  "success": false,
+  "tests_passed": 0,
+  "tests_failed": 4,
+  "tests_total": 4,
+  "test_output": "FAIL: vite.config.js exists - vite.config.js not found\nFAIL: vite.config.js has proxy configuration - ENOENT: no such file or directory, open 'c:\\IMPORTANT\\NSU\\3\\shc\\github_clones\\webai-tool\\benchmark\\workspaces\\bugfix-cors-frontend\\vite.config.js'\nFAIL: proxy forwards /api to backend - ENOENT: no such file or directory, open 'c:\\IMPORTANT\\NSU\\3\\shc\\github_clones\\webai-tool\\benchmark\\workspaces\\bugfix-cors-frontend\\vite.config.js'\nFAIL: proxy configuration is valid JavaScript - ENOENT: no such file or directory, open 'c:\\IMPORTANT\\NSU\\3\\shc\\github_clones\\webai-tool\\benchmark\\workspaces\\bugfix-cors-frontend\\vite.config.js'\n",
+  "agent_steps": 5,
+  "time_seconds": 55.1626410484314,
+  "error": null,
+  "timestamp": "2026-06-06T22:06:23.032904"
+}
