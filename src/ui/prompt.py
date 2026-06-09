@@ -14,6 +14,10 @@ def _key_bindings() -> KeyBindings:
     def _(event):
         event.app.exit(result=event.app.current_buffer.text)
 
+    @bindings.add("c-d")
+    def _(event):
+        event.app.exit(result=event.app.current_buffer.text)
+
     return bindings
 
 
@@ -22,7 +26,7 @@ def ask(prompt: str = "Your feedback") -> str:
         Panel(
             (
                 "[bold]Enter[/bold] adds a new line.\n"
-                "[bold]Esc+Enter[/bold] sends the text.\n"
+                "[bold]Esc+Enter[/bold] or [bold]Ctrl+D[/bold] sends the text.\n"
                 "[bold]Ctrl+C[/bold] cancels."
             ),
             title=f"[bold yellow]{prompt}[/bold yellow]",
@@ -32,7 +36,10 @@ def ask(prompt: str = "Your feedback") -> str:
     session = PromptSession(
         HTML("<ansiyellow> > </ansiyellow>"),
         multiline=True,
+        complete_while_typing=False,
+        erase_when_done=True,
         key_bindings=_key_bindings(),
+        reserve_space_for_menu=0,
     )
     try:
         with patch_stdout():

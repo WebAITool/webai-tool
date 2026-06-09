@@ -139,6 +139,58 @@ def test_commit_command_requires_commits_enabled(monkeypatch):
     assert route(state) == "ask_user"
 
 
+def test_ask_user_records_feedback_and_resets_completion_state(monkeypatch):
+    lg_agent = _load_lg_agent(monkeypatch)
+    ui_module = types.ModuleType("ui")
+    ui_module.ask = lambda prompt="Your feedback": "add another line"
+    monkeypatch.setitem(sys.modules, "ui", ui_module)
+
+    state = lg_agent.get_initial_state(goal="done", spec="", prjdir="/tmp/project")
+    state["current_plan"] = "[CONFIRMED_DONE]"
+    state["completion_failures"] = 2
+
+    update = lg_agent.make_ask_user()(state)
+
+    assert update["human_feedbacks"] == ["add another line"]
+    assert update["current_plan"] == ""
+    assert update["completion_failures"] == 0
+
+
+def test_verify_completion_includes_actionable_feedback(monkeypatch):
+    lg_agent = _load_lg_agent(monkeypatch)
+    verifier = lg_agent.make_verify_completion(object())
+    captured = {}
+    state = lg_agent.get_initial_state(goal="Create RESULT.txt", spec="", prjdir="/tmp/project")
+    state["human_feedbacks"] = [
+        "/commit",
+        "append SUPER OK to RESULT.txt",
+    ]
+
+    def fake_invoke(llm, system_prompt, user_prompt):
+        captured["user_prompt"] = user_prompt
+        return "YES"
+
+    monkeypatch.setattr(lg_agent, "invoke_text", fake_invoke)
+
+    update = verifier(state)
+
+    assert update["current_plan"] == "[CONFIRMED_DONE]"
+    assert update["completion_failures"] == 0
+    assert "/commit" not in captured["user_prompt"]
+    assert "append SUPER OK to RESULT.txt" in captured["user_prompt"]
+
+
+def test_route_after_verification_returns_to_feedback_after_repeated_failures(monkeypatch):
+    lg_agent = _load_lg_agent(monkeypatch)
+
+    state = lg_agent.get_initial_state(goal="done", spec="", prjdir="/tmp/project")
+    state["completion_failures"] = lg_agent.MAX_COMPLETION_FAILURES
+
+    route = lg_agent.make_route_after_verification(interactive=True)
+
+    assert route(state) == "ask_user"
+
+
 def test_commit_command_uses_preview_and_prompt_message(monkeypatch):
     lg_agent = _load_lg_agent(monkeypatch)
     calls = []
@@ -339,6 +391,7 @@ def test_verify_completion_accepts_yes_inside_model_explanation(monkeypatch):
     update = verifier(state)
 
     assert update["current_plan"] == "[CONFIRMED_DONE]"
+    assert update["completion_failures"] == 0
 
 
 def test_execute_python_code_captures_traceback_and_removes_script(

@@ -6,6 +6,12 @@ import argparse
 import logging
 from pathlib import Path
 
+from rich.console import Console
+from rich.panel import Panel
+
+
+console = Console()
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
@@ -42,7 +48,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return _main(argv)
     except KeyboardInterrupt:
-        print("\nInterrupted by user.")
+        console.print("\n[bold yellow]Interrupted by user.[/bold yellow]")
         return 130
 
 
@@ -77,14 +83,26 @@ def _main(argv: list[str] | None = None) -> int:
         doc = makesrs(str(refprjpath))
         if doc is None:
             raise RuntimeError("doc is None!")
-        print("doc created")
+        console.print(
+            Panel(
+                "Documentation generated from reference project.",
+                title="[bold cyan]Input[/bold cyan]",
+                border_style="cyan",
+            )
+        )
         with open(docpath, "w+", encoding="utf-8") as docfile:
             docfile.write(doc)
-            print("doc writed")
+            console.print("[dim]Documentation written.[/dim]")
     else:
         with open(docpath, "r", encoding="utf-8") as docfile:
             doc = docfile.read()
-            print("doc readed")
+            console.print(
+                Panel(
+                    "Documentation loaded.",
+                    title="[bold cyan]Input[/bold cyan]",
+                    border_style="cyan",
+                )
+            )
 
     prepare_dev_env(
         DevEnvConfig(

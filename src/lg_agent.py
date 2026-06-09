@@ -19,6 +19,14 @@ from llm_config import LLMConfig, load_llm_config, validate_llm_config
 
 
 console = Console()
+MAX_COMPLETION_FAILURES = 3
+CONTROL_FEEDBACK = {
+    "",
+    "/commit",
+    "/exit",
+    "/quit",
+    "/q",
+}
 
 IGNORE_DIRS = {
     ".git",
@@ -67,6 +75,7 @@ class AgentState(TypedDict):
     implementor_retries: int
     iterations: int
     max_steps: int
+    completion_failures: int
 
 
 def create_llm(config: LLMConfig | None = None) -> ChatOpenAI:
@@ -272,6 +281,28 @@ def format_history(history: List[str]) -> str:
     return "\n".join(history)
 
 
+def is_control_feedback(feedback: str) -> bool:
+    return feedback.strip() in CONTROL_FEEDBACK
+
+
+def get_actionable_feedbacks(state: AgentState) -> list[str]:
+    return [
+        feedback.strip()
+        for feedback in state.get("human_feedbacks", [])
+        if feedback.strip() and not is_control_feedback(feedback)
+    ]
+
+
+def format_actionable_feedbacks(state: AgentState) -> str:
+    feedbacks = get_actionable_feedbacks(state)
+    if not feedbacks:
+        return "No user feedback."
+    return "\n\n".join(
+        f"{index}. {feedback}"
+        for index, feedback in enumerate(feedbacks, start=1)
+    )
+
+
 def get_git_diff(prjdir: str) -> str:
     try:
         result = subprocess.run(
@@ -400,9 +431,7 @@ def make_thinker(llm: ChatOpenAI):
             history_text = format_history(state["chat_history"][:-1])
         else:
             history_text = "No previous actions."
-        feedback_text = "\n".join(state.get("human_feedbacks", []))
-        if not feedback_text:
-            feedback_text = "No user feedback."
+        feedback_text = format_actionable_feedbacks(state)
 
         system_prompt = (
             "You are the Architect agent of an autonomous coding system. "
@@ -412,7 +441,8 @@ def make_thinker(llm: ChatOpenAI):
             "1. Do not write code.\n"
             "2. Plan one concrete next step only.\n"
             "3. If file contents are needed, ask the Implementor to read and print them.\n"
-            "4. If the goal is fully achieved, output only: [DONE]"
+            "4. Treat user feedback as active follow-up requirements that may extend or supersede the original goal.\n"
+            "5. If the goal and all actionable user feedback are fully achieved, output only: [DONE]"
         )
         user_prompt = (
             f"PROJECT DIRECTORY: {state['prjdir']}\n\n"
@@ -452,21 +482,46 @@ def make_verify_completion(llm: ChatOpenAI):
             )
         )
         system_prompt = "You are the Architect agent."
+        feedback_text = format_actionable_feedbacks(state)
         user_prompt = (
             f"PROJECT GOAL:\n{state['goal']}\n\n"
+            f"USER FEEDBACK:\n{feedback_text}\n\n"
             f"ACTION HISTORY:\n{format_history(state['chat_history'])}\n\n"
-            "The previous step indicated [DONE]. Are the required changes "
-            "successfully applied to the codebase? Reply exactly YES or NO."
+            "The previous step indicated [DONE]. Are the project goal and all "
+            "actionable user feedback successfully applied to the codebase? "
+            "User feedback may extend or supersede exact wording in the original "
+            "goal. Reply exactly YES or NO."
         )
         with console.status("[bold green]Verifying...[/bold green]", spinner="dots"):
             answer = invoke_text(llm, system_prompt, user_prompt)
         debug_llm_call("verify_completion", system_prompt, user_prompt, answer)
         if "YES" in answer.upper():
-            console.print("[bold green]Goal confirmed as achieved[/bold green]")
-            return {"current_plan": "[CONFIRMED_DONE]"}
-        console.print("[bold yellow]Architect requested more work[/bold yellow]")
+            console.print(
+                Panel(
+                    "[bold green]Goal confirmed as achieved[/bold green]",
+                    title="[bold green]Completion check[/bold green]",
+                    border_style="green",
+                )
+            )
+            return {
+                "current_plan": "[CONFIRMED_DONE]",
+                "completion_failures": 0,
+            }
+        next_failures = state.get("completion_failures", 0) + 1
+        console.print(
+            Panel(
+                (
+                    "[bold yellow]Architect requested more work[/bold yellow]\n"
+                    f"Completion check attempt {next_failures} of "
+                    f"{MAX_COMPLETION_FAILURES}."
+                ),
+                title="[bold yellow]Completion check[/bold yellow]",
+                border_style="yellow",
+            )
+        )
         return {
             "current_plan": "Completion check failed; continue with the next missing step.",
+            "completion_failures": next_failures,
             "chat_history": state["chat_history"]
             + ["Architect tried to finish, but completion was not confirmed."],
         }
@@ -538,7 +593,13 @@ def execute_code(state: AgentState):
     )
     result = execute_python_code(state["current_code"], state["prjdir"])
     if result.success:
-        console.print("[bold green]Execution successful[/bold green]")
+        console.print(
+            Panel(
+                "[bold green]Execution successful[/bold green]",
+                title="[bold green]Execution result[/bold green]",
+                border_style="green",
+            )
+        )
         if result.stdout:
             console.print(
                 Panel(
@@ -622,6 +683,8 @@ def make_ask_user():
         user_feedback = ask()
         return {
             "human_feedbacks": state["human_feedbacks"] + [user_feedback],
+            "current_plan": "",
+            "completion_failures": 0,
         }
 
     return ask_user
@@ -629,7 +692,7 @@ def make_ask_user():
 
 def make_route_after_answer(commits_enabled: bool, llm: ChatOpenAI | None = None):
     def route_after_answer(state: AgentState):
-        last = state["human_feedbacks"][-1]
+        last = state["human_feedbacks"][-1].strip()
         if last in {"", "/exit", "/quit", "/q"}:
             return END
         if last == "/commit":
@@ -718,6 +781,20 @@ def make_route_after_verification(interactive: bool):
     def route_after_verification(state: AgentState):
         if state["current_plan"] == "[CONFIRMED_DONE]":
             return "ask_user" if interactive else END
+        if state.get("completion_failures", 0) >= MAX_COMPLETION_FAILURES:
+            console.print(
+                Panel(
+                    (
+                        "Completion could not be confirmed automatically. "
+                        "Returning to feedback instead of looping."
+                        if interactive
+                        else "Completion could not be confirmed automatically. Stopping."
+                    ),
+                    title="[bold yellow]Completion check[/bold yellow]",
+                    border_style="yellow",
+                )
+            )
+            return "ask_user" if interactive else END
         return "thinker"
 
     return route_after_verification
@@ -760,6 +837,7 @@ def get_initial_state(
             "implementor_retries": 0,
             "iterations": 0,
             "max_steps": max_steps,
+            "completion_failures": 0,
         }
     )
 

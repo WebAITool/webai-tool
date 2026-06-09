@@ -7,11 +7,15 @@ def _load_prompt_module(monkeypatch, prompt_impl):
     prompt_toolkit = types.ModuleType("prompt_toolkit")
 
     class PromptSession:
+        instances = []
+
         def __init__(self, *args, **kwargs):
             self.args = args
             self.kwargs = kwargs
+            self.__class__.instances.append(self)
 
-        def prompt(self):
+        def prompt(self, **kwargs):
+            self.prompt_kwargs = kwargs
             return prompt_impl()
 
     prompt_toolkit.PromptSession = PromptSession
@@ -65,3 +69,15 @@ def test_ask_returns_empty_string_on_keyboard_interrupt(monkeypatch):
     prompt = _load_prompt_module(monkeypatch, raise_interrupt)
 
     assert prompt.ask("Feedback") == ""
+
+
+def test_ask_does_not_reserve_completion_menu_space(monkeypatch):
+    prompt = _load_prompt_module(monkeypatch, lambda: "feedback")
+
+    prompt.ask("Feedback")
+
+    session = prompt.PromptSession.instances[-1]
+    assert session.kwargs["complete_while_typing"] is False
+    assert session.kwargs["erase_when_done"] is True
+    assert session.kwargs["reserve_space_for_menu"] == 0
+    assert session.prompt_kwargs == {}
