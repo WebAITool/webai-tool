@@ -154,6 +154,26 @@ def test_ask_user_records_feedback_and_resets_completion_state(monkeypatch):
     assert update["human_feedbacks"] == ["add another line"]
     assert update["current_plan"] == ""
     assert update["completion_failures"] == 0
+    assert update["pending_feedback"] == "add another line"
+
+
+def test_thinker_does_not_accept_done_when_feedback_is_pending(monkeypatch):
+    lg_agent = _load_lg_agent(monkeypatch)
+    thinker = lg_agent.make_thinker(object())
+    state = lg_agent.get_initial_state(goal="done", spec="", prjdir="/tmp/project")
+    state["human_feedbacks"] = ["append SUPER OK to RESULT.txt"]
+    state["pending_feedback"] = "append SUPER OK to RESULT.txt"
+
+    monkeypatch.setattr(lg_agent, "make_tree", lambda prjdir: "(empty project)")
+    monkeypatch.setattr(lg_agent, "invoke_text", lambda *args: "[DONE]")
+
+    update = thinker(state)
+
+    assert update["current_plan"] == (
+        "Handle the latest user feedback before finishing:\n"
+        "append SUPER OK to RESULT.txt"
+    )
+    assert lg_agent.route_after_thinker({**state, **update}) == "implementor"
 
 
 def test_verify_completion_includes_actionable_feedback(monkeypatch):
@@ -356,6 +376,33 @@ def test_execute_code_records_failure_after_retry_exhaustion(monkeypatch):
     assert "Result: FAILURE" in update["chat_history"][-1]
 
 
+def test_execute_code_clears_pending_feedback_after_success(monkeypatch):
+    lg_agent = _load_lg_agent(monkeypatch)
+
+    monkeypatch.setattr(
+        lg_agent,
+        "execute_python_code",
+        lambda code, prjdir: lg_agent.ExecutionResult(
+            success=True,
+            returncode=0,
+            stdout="",
+            stderr="",
+        ),
+    )
+    state = lg_agent.get_initial_state(
+        goal="create result",
+        spec="",
+        prjdir="/tmp/project",
+    )
+    state["current_plan"] = "Append SUPER OK."
+    state["current_code"] = "pass"
+    state["pending_feedback"] = "append SUPER OK"
+
+    update = lg_agent.execute_code(state)
+
+    assert update["pending_feedback"] == ""
+
+
 def test_execute_python_code_uses_current_interpreter(tmp_path, monkeypatch):
     lg_agent = _load_lg_agent(monkeypatch)
     calls = []
@@ -377,6 +424,15 @@ def test_route_after_thinker_accepts_done_marker_with_extra_text(monkeypatch):
 
     state = lg_agent.get_initial_state(goal="done", spec="", prjdir="/tmp/project")
     state["current_plan"] = "The task is complete.\n[DONE]"
+
+    assert lg_agent.route_after_thinker(state) == "verify_completion"
+
+
+def test_route_after_thinker_accepts_done_marker_with_inner_spaces(monkeypatch):
+    lg_agent = _load_lg_agent(monkeypatch)
+
+    state = lg_agent.get_initial_state(goal="done", spec="", prjdir="/tmp/project")
+    state["current_plan"] = "[ DONE ]"
 
     assert lg_agent.route_after_thinker(state) == "verify_completion"
 

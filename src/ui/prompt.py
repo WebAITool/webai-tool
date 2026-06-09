@@ -37,7 +37,7 @@ def ask(prompt: str = "Your feedback") -> str:
         HTML("<ansiyellow> > </ansiyellow>"),
         multiline=True,
         complete_while_typing=False,
-        erase_when_done=True,
+        erase_when_done=False,
         key_bindings=_key_bindings(),
         reserve_space_for_menu=0,
     )

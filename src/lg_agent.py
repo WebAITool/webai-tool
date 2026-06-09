@@ -76,6 +76,7 @@ class AgentState(TypedDict):
     iterations: int
     max_steps: int
     completion_failures: int
+    pending_feedback: str
 
 
 def create_llm(config: LLMConfig | None = None) -> ChatOpenAI:
@@ -303,6 +304,19 @@ def format_actionable_feedbacks(state: AgentState) -> str:
     )
 
 
+def has_done_marker(plan: str) -> bool:
+    return re.search(r"\[\s*DONE\s*\]", plan, flags=re.IGNORECASE) is not None
+
+
+def prevent_premature_done(plan: str, pending_feedback: str) -> str:
+    if not pending_feedback or not has_done_marker(plan):
+        return plan
+    return (
+        "Handle the latest user feedback before finishing:\n"
+        f"{pending_feedback}"
+    )
+
+
 def get_git_diff(prjdir: str) -> str:
     try:
         result = subprocess.run(
@@ -455,6 +469,7 @@ def make_thinker(llm: ChatOpenAI):
         )
         with console.status("[bold green]Consulting LLM...[/bold green]", spinner="dots"):
             plan = invoke_text(llm, system_prompt, user_prompt)
+        plan = prevent_premature_done(plan, state.get("pending_feedback", ""))
         debug_llm_call("thinker", system_prompt, user_prompt, plan)
         console.print(
             Panel(
@@ -626,6 +641,7 @@ def execute_code(state: AgentState):
             "chat_history": state["chat_history"] + [log_entry],
             "last_error": "",
             "implementor_retries": 0,
+            "pending_feedback": "",
         }
 
     next_retries = state["implementor_retries"] + 1
@@ -656,7 +672,7 @@ def execute_code(state: AgentState):
 
 def route_after_thinker(state: AgentState):
     plan = state["current_plan"].strip()
-    if "[DONE]" in plan.upper():
+    if has_done_marker(plan):
         return "verify_completion"
     if state["iterations"] >= state["max_steps"]:
         console.print("[bold red]Max iterations reached. Stopping.[/bold red]")
@@ -681,10 +697,16 @@ def make_ask_user():
             )
         )
         user_feedback = ask()
+        pending_feedback = (
+            user_feedback.strip()
+            if not is_control_feedback(user_feedback)
+            else state.get("pending_feedback", "")
+        )
         return {
             "human_feedbacks": state["human_feedbacks"] + [user_feedback],
             "current_plan": "",
             "completion_failures": 0,
+            "pending_feedback": pending_feedback,
         }
 
     return ask_user
@@ -838,6 +860,7 @@ def get_initial_state(
             "iterations": 0,
             "max_steps": max_steps,
             "completion_failures": 0,
+            "pending_feedback": "",
         }
     )
 

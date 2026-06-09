@@ -78,6 +78,6 @@ def test_ask_does_not_reserve_completion_menu_space(monkeypatch):
 
     session = prompt.PromptSession.instances[-1]
     assert session.kwargs["complete_while_typing"] is False
-    assert session.kwargs["erase_when_done"] is True
+    assert session.kwargs["erase_when_done"] is False
     assert session.kwargs["reserve_space_for_menu"] == 0
     assert session.prompt_kwargs == {}
