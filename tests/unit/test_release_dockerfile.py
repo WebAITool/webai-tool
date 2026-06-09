@@ -21,3 +21,10 @@ def test_docker_dependency_layer_does_not_depend_on_readme_content():
         if line.strip().startswith("COPY ") and "README.md" in line
     )
     assert readme_copy_index > uv_sync_index
+
+
+def test_docker_entrypoint_uses_release_cli_with_src_pythonpath():
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+
+    assert "ENV PYTHONPATH=/app/src" in dockerfile
+    assert 'ENTRYPOINT ["/app/.venv/bin/python", "/app/src/main.py"]' in dockerfile

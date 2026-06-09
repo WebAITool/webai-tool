@@ -70,7 +70,21 @@ def test_interactive_prompt_dependency_is_declared():
     )
     dependencies = pyproject["project"]["dependencies"]
 
+    assert any(dep.startswith("rich") for dep in dependencies)
     assert any(dep.startswith("prompt-toolkit") for dep in dependencies)
+
+
+def test_rich_prompt_imports_with_release_pythonpath():
+    import sys
+
+    root = Path(__file__).resolve().parents[2]
+    sys.path.insert(0, str(root / "src"))
+    try:
+        from ui.prompt import ask
+
+        assert callable(ask)
+    finally:
+        sys.path.remove(str(root / "src"))
 
 
 def test_env_example_documents_required_provider_settings():

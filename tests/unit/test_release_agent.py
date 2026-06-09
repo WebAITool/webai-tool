@@ -128,6 +128,93 @@ def test_create_agent_adds_interactive_feedback_node_only_when_enabled(monkeypat
     ]
 
 
+def test_commit_command_requires_commits_enabled(monkeypatch):
+    lg_agent = _load_lg_agent(monkeypatch)
+
+    state = lg_agent.get_initial_state(goal="done", spec="", prjdir="/tmp/project")
+    state["human_feedbacks"] = ["/commit"]
+
+    route = lg_agent.make_route_after_answer(commits_enabled=False)
+
+    assert route(state) == "ask_user"
+
+
+def test_commit_command_uses_preview_and_prompt_message(monkeypatch):
+    lg_agent = _load_lg_agent(monkeypatch)
+    calls = []
+
+    git_module = types.SimpleNamespace(
+        get_dirty_files=lambda: ["RESULT.txt"],
+        commit=lambda files, message: calls.append((files, message)),
+    )
+    dev_env_module = types.ModuleType("dev_env")
+    dev_env_module.git = git_module
+    monkeypatch.setitem(sys.modules, "dev_env", dev_env_module)
+    monkeypatch.setattr(
+        lg_agent,
+        "get_commit_preview",
+        lambda prjdir, files: "diff --git a/RESULT.txt b/RESULT.txt",
+    )
+    monkeypatch.setattr(lg_agent.Prompt, "ask", lambda *args, **kwargs: "1")
+    ui_module = types.ModuleType("ui")
+    ui_module.ask = lambda prompt="Your feedback": "Add result"
+    monkeypatch.setitem(sys.modules, "ui", ui_module)
+
+    state = lg_agent.get_initial_state(goal="done", spec="", prjdir="/tmp/project")
+    state["human_feedbacks"] = ["/commit"]
+
+    route = lg_agent.make_route_after_answer(commits_enabled=True)
+
+    assert route(state) == "ask_user"
+    assert calls == [(["RESULT.txt"], "Add result")]
+
+
+def test_commit_command_can_generate_ai_message(monkeypatch):
+    lg_agent = _load_lg_agent(monkeypatch)
+    calls = []
+
+    git_module = types.SimpleNamespace(
+        get_dirty_files=lambda: ["RESULT.txt"],
+        commit=lambda files, message: calls.append((files, message)),
+    )
+    dev_env_module = types.ModuleType("dev_env")
+    dev_env_module.git = git_module
+    monkeypatch.setitem(sys.modules, "dev_env", dev_env_module)
+    monkeypatch.setattr(
+        lg_agent,
+        "get_commit_preview",
+        lambda prjdir, files: "diff --git a/RESULT.txt b/RESULT.txt",
+    )
+    monkeypatch.setattr(lg_agent.Prompt, "ask", lambda *args, **kwargs: "2")
+    monkeypatch.setattr(
+        lg_agent,
+        "generate_commit_message",
+        lambda llm, preview: "Add result file",
+    )
+
+    state = lg_agent.get_initial_state(goal="done", spec="", prjdir="/tmp/project")
+    state["human_feedbacks"] = ["/commit"]
+
+    route = lg_agent.make_route_after_answer(
+        commits_enabled=True,
+        llm=object(),
+    )
+
+    assert route(state) == "ask_user"
+    assert calls == [(["RESULT.txt"], "Add result file")]
+
+
+def test_commit_preview_includes_untracked_file_diff(tmp_path, monkeypatch):
+    lg_agent = _load_lg_agent(monkeypatch)
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    (tmp_path / "RESULT.txt").write_text("OK\n", encoding="utf-8")
+
+    preview = lg_agent.get_commit_preview(str(tmp_path), ["RESULT.txt"])
+
+    assert "?? RESULT.txt" in preview
+    assert "+OK" in preview
+
+
 def test_extract_code_selects_python_block(monkeypatch):
     lg_agent = _load_lg_agent(monkeypatch)
 

@@ -10,9 +10,15 @@ from typing import List, TypedDict
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph
+from rich.console import Console
+from rich.panel import Panel
+from rich.prompt import Prompt
+from rich.syntax import Syntax
 
 from llm_config import LLMConfig, load_llm_config, validate_llm_config
 
+
+console = Console()
 
 IGNORE_DIRS = {
     ".git",
@@ -266,6 +272,89 @@ def format_history(history: List[str]) -> str:
     return "\n".join(history)
 
 
+def get_git_diff(prjdir: str) -> str:
+    try:
+        result = subprocess.run(
+            ["git", "diff", "--no-color"],
+            cwd=prjdir,
+            capture_output=True,
+            text=True,
+        )
+    except Exception:
+        return ""
+    if result.returncode != 0:
+        return ""
+    return result.stdout.strip()
+
+
+def get_commit_preview(prjdir: str, dirty_files: list[str]) -> str:
+    if not dirty_files:
+        return "No changes to commit."
+
+    preview_parts: list[str] = []
+    status = subprocess.run(
+        ["git", "status", "--short"],
+        cwd=prjdir,
+        capture_output=True,
+        text=True,
+    )
+    if status.stdout.strip():
+        preview_parts.append(status.stdout.strip())
+
+    diff = subprocess.run(
+        ["git", "diff", "--no-color"],
+        cwd=prjdir,
+        capture_output=True,
+        text=True,
+    )
+    if diff.stdout.strip():
+        preview_parts.append(diff.stdout.strip())
+
+    for file_path in dirty_files:
+        if " -> " in file_path:
+            continue
+        full_path = os.path.join(prjdir, file_path)
+        if not os.path.isfile(full_path):
+            continue
+        untracked = subprocess.run(
+            ["git", "ls-files", "--error-unmatch", "--", file_path],
+            cwd=prjdir,
+            capture_output=True,
+            text=True,
+        )
+        if untracked.returncode == 0:
+            continue
+
+        file_diff = subprocess.run(
+            ["git", "diff", "--no-color", "--no-index", "--", "/dev/null", file_path],
+            cwd=prjdir,
+            capture_output=True,
+            text=True,
+        )
+        if file_diff.stdout.strip():
+            preview_parts.append(file_diff.stdout.strip())
+        else:
+            preview_parts.append(f"Untracked file: {file_path}")
+
+    return "\n\n".join(preview_parts) or "No textual diff available."
+
+
+def generate_commit_message(llm: ChatOpenAI, preview: str) -> str:
+    system_prompt = (
+        "You write concise git commit messages. "
+        "Return only the commit message, with no Markdown fences or explanation."
+    )
+    user_prompt = (
+        "Write a clear commit message for these changes.\n\n"
+        "Rules:\n"
+        "- Use imperative mood.\n"
+        "- Keep the first line under 72 characters.\n"
+        "- Add a short body only if it materially helps.\n\n"
+        f"CHANGES:\n{preview[:12000]}"
+    )
+    return invoke_text(llm, system_prompt, user_prompt).strip()
+
+
 def invoke_text(llm: ChatOpenAI, system_prompt: str, user_prompt: str) -> str:
     response = llm.invoke(
         [
@@ -295,7 +384,12 @@ def debug_llm_call(
 
 def make_thinker(llm: ChatOpenAI):
     def thinker(state: AgentState):
-        print("thinking...")
+        console.print(
+            Panel(
+                "[bold cyan]Thinker is analyzing the project[/bold cyan]",
+                border_style="cyan",
+            )
+        )
         tree = make_tree(state["prjdir"])
         last_result = ""
         if state["chat_history"]:
@@ -329,9 +423,16 @@ def make_thinker(llm: ChatOpenAI):
             f"{last_result}"
             "Based on the current state, what is the exact next step?"
         )
-        plan = invoke_text(llm, system_prompt, user_prompt)
+        with console.status("[bold green]Consulting LLM...[/bold green]", spinner="dots"):
+            plan = invoke_text(llm, system_prompt, user_prompt)
         debug_llm_call("thinker", system_prompt, user_prompt, plan)
-        print(plan)
+        console.print(
+            Panel(
+                plan,
+                title="[bold]Next step[/bold]",
+                border_style="blue",
+            )
+        )
         return {
             "current_plan": plan,
             "iterations": state["iterations"] + 1,
@@ -344,7 +445,12 @@ def make_thinker(llm: ChatOpenAI):
 
 def make_verify_completion(llm: ChatOpenAI):
     def verify_completion(state: AgentState):
-        print("trying to end...")
+        console.print(
+            Panel(
+                "[bold cyan]Verifying completion with Architect[/bold cyan]",
+                border_style="cyan",
+            )
+        )
         system_prompt = "You are the Architect agent."
         user_prompt = (
             f"PROJECT GOAL:\n{state['goal']}\n\n"
@@ -352,10 +458,13 @@ def make_verify_completion(llm: ChatOpenAI):
             "The previous step indicated [DONE]. Are the required changes "
             "successfully applied to the codebase? Reply exactly YES or NO."
         )
-        answer = invoke_text(llm, system_prompt, user_prompt)
+        with console.status("[bold green]Verifying...[/bold green]", spinner="dots"):
+            answer = invoke_text(llm, system_prompt, user_prompt)
         debug_llm_call("verify_completion", system_prompt, user_prompt, answer)
         if "YES" in answer.upper():
+            console.print("[bold green]Goal confirmed as achieved[/bold green]")
             return {"current_plan": "[CONFIRMED_DONE]"}
+        console.print("[bold yellow]Architect requested more work[/bold yellow]")
         return {
             "current_plan": "Completion check failed; continue with the next missing step.",
             "chat_history": state["chat_history"]
@@ -367,7 +476,15 @@ def make_verify_completion(llm: ChatOpenAI):
 
 def make_implementor(llm: ChatOpenAI):
     def implementor(state: AgentState):
-        print(f"code writing... attempt {state['implementor_retries'] + 1}")
+        console.print(
+            Panel(
+                (
+                    "[bold cyan]Implementor is writing code[/bold cyan] "
+                    f"[yellow](attempt {state['implementor_retries'] + 1})[/yellow]"
+                ),
+                border_style="cyan",
+            )
+        )
         tree = make_tree(state["prjdir"])
         last_result = ""
         if state["chat_history"]:
@@ -401,7 +518,11 @@ def make_implementor(llm: ChatOpenAI):
                 "Fix the code and try again."
             )
 
-        raw_response = invoke_text(llm, system_prompt, user_prompt)
+        with console.status(
+            "[bold green]Generating implementation...[/bold green]",
+            spinner="dots",
+        ):
+            raw_response = invoke_text(llm, system_prompt, user_prompt)
         debug_llm_call("implementor", system_prompt, user_prompt, raw_response)
         return {"current_code": extract_code(raw_response)}
 
@@ -409,9 +530,32 @@ def make_implementor(llm: ChatOpenAI):
 
 
 def execute_code(state: AgentState):
-    print("code executing...")
+    console.print(
+        Panel(
+            "[bold cyan]Executing generated code[/bold cyan]",
+            border_style="cyan",
+        )
+    )
     result = execute_python_code(state["current_code"], state["prjdir"])
     if result.success:
+        console.print("[bold green]Execution successful[/bold green]")
+        if result.stdout:
+            console.print(
+                Panel(
+                    result.stdout[:2000],
+                    title="[bold]Console output[/bold]",
+                    border_style="green",
+                )
+            )
+        diff = get_git_diff(state["prjdir"])
+        if diff:
+            console.print(
+                Panel(
+                    Syntax(diff, "diff", theme="monokai", word_wrap=True),
+                    title="[bold green]Git diff[/bold green]",
+                    border_style="green",
+                )
+            )
         log_entry = (
             f"Architect planned: {state['current_plan'][:500]}\n"
             "Result: SUCCESS\n"
@@ -429,7 +573,13 @@ def execute_code(state: AgentState):
         f"STDOUT:\n{result.stdout[:10000]}\n"
         f"STDERR:\n{result.stderr[:10000]}"
     )
-    print("ERROR:", error_report)
+    console.print(
+        Panel(
+            error_report[:3000],
+            title="[bold red]Execution failed[/bold red]",
+            border_style="red",
+        )
+    )
     update = {
         "last_error": error_report,
         "implementor_retries": next_retries,
@@ -448,7 +598,7 @@ def route_after_thinker(state: AgentState):
     if "[DONE]" in plan.upper():
         return "verify_completion"
     if state["iterations"] >= state["max_steps"]:
-        print("Max iterations reached. Stopping.")
+        console.print("[bold red]Max iterations reached. Stopping.[/bold red]")
         return END
     return "implementor"
 
@@ -457,9 +607,17 @@ def make_ask_user():
     def ask_user(state: AgentState):
         from ui import ask
 
-        print(
-            "Now you can give feedback to agent.\n"
-            "If you want to leave, give an empty answer or write /exit, /quit or /q"
+        console.print(
+            Panel(
+                (
+                    "[bold]Now you can give feedback to the agent.[/bold]\n"
+                    "Write [cyan]/commit[/cyan] to review and commit current changes.\n"
+                    "Leave empty or write [cyan]/exit[/cyan], [cyan]/quit[/cyan], "
+                    "or [cyan]/q[/cyan] to stop."
+                ),
+                title="[bold yellow]User feedback[/bold yellow]",
+                border_style="yellow",
+            )
         )
         user_feedback = ask()
         return {
@@ -467,6 +625,86 @@ def make_ask_user():
         }
 
     return ask_user
+
+
+def make_route_after_answer(commits_enabled: bool, llm: ChatOpenAI | None = None):
+    def route_after_answer(state: AgentState):
+        last = state["human_feedbacks"][-1]
+        if last in {"", "/exit", "/quit", "/q"}:
+            return END
+        if last == "/commit":
+            if not commits_enabled:
+                console.print(
+                    Panel(
+                        "Start the CLI with [bold]--enable-commits[/bold] to use /commit.",
+                        border_style="yellow",
+                    )
+                )
+                return "ask_user"
+
+            from dev_env import git
+
+            dirty_files = git.get_dirty_files()
+            if not dirty_files:
+                console.print("[dim]No changes to commit.[/dim]")
+                return "ask_user"
+
+            preview = get_commit_preview(state["prjdir"], dirty_files)
+            console.print(
+                Panel(
+                    Syntax(preview, "diff", theme="monokai", word_wrap=True),
+                    title="[bold yellow]Commit preview[/bold yellow]",
+                    border_style="yellow",
+                )
+            )
+            mode = Prompt.ask(
+                (
+                    "[bold yellow]Commit message[/bold yellow] "
+                    "[dim](1 = write manually, 2 = ask AI, /cancel = cancel)[/dim]"
+                ),
+                console=console,
+                choices=["1", "2", "/cancel"],
+                default="1",
+            ).strip()
+            if mode == "/cancel":
+                console.print("[bold yellow]Commit cancelled.[/bold yellow]")
+                return "ask_user"
+            if mode == "2":
+                if llm is None:
+                    console.print("[bold yellow]AI commit message is unavailable.[/bold yellow]")
+                    return "ask_user"
+                with console.status(
+                    "[bold green]Generating commit message...[/bold green]",
+                    spinner="dots",
+                ):
+                    message = generate_commit_message(llm, preview)
+                console.print(
+                    Panel(
+                        message,
+                        title="[bold blue]AI commit message[/bold blue]",
+                        border_style="blue",
+                    )
+                )
+            else:
+                from ui import ask
+
+                message = ask("Commit message")
+            if not message:
+                console.print("[bold yellow]Commit cancelled.[/bold yellow]")
+                return "ask_user"
+
+            git.commit(dirty_files, message)
+            console.print(
+                Panel(
+                    message,
+                    title="[bold green]Committed changes[/bold green]",
+                    border_style="green",
+                )
+            )
+            return "ask_user"
+        return "thinker"
+
+    return route_after_answer
 
 
 def route_after_answer(state: AgentState):
@@ -531,7 +769,6 @@ def create_agent(
     interactive: bool = False,
     llm_config: LLMConfig | None = None,
 ):
-    del commits_enabled
     llm = create_llm(llm_config)
     graph = StateGraph(state_schema=AgentState)
     graph.add_node("thinker", make_thinker(llm))
@@ -550,7 +787,7 @@ def create_agent(
         make_route_after_verification(interactive),
     )
     if interactive:
-        graph.add_conditional_edges("ask_user", route_after_answer)
+        graph.add_conditional_edges("ask_user", make_route_after_answer(commits_enabled, llm))
     return graph.compile()
 
 
