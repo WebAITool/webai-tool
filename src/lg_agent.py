@@ -1,25 +1,47 @@
-import ast
 import logging
 import os
 import re
 import subprocess
 import sys
+import tempfile
+import time
 from dataclasses import dataclass
 from typing import List, TypedDict
 
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph
 from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.syntax import Syntax
 
+from llm_client import LLMTransportError, OpenAICompatibleChatClient
 from llm_config import LLMConfig, load_llm_config, validate_llm_config
 
 
 console = Console()
 MAX_COMPLETION_FAILURES = 3
+HISTORY_ENTRY_LIMIT = 4000
+HISTORY_TOTAL_LIMIT = 12000
+SCRIPT_OUTPUT_HISTORY_LIMIT = 3000
+DOCKER_EXECUTOR_PROJECT_DIR = "/workspace/project"
+DEFAULT_CODE_EXECUTOR_TIMEOUT_SECONDS = 600
+DEFAULT_CODE_EXECUTOR_OUTPUT_LIMIT_BYTES = 4 * 1024 * 1024
+DEFAULT_CODE_EXECUTOR_MEMORY = "4g"
+DEFAULT_CODE_EXECUTOR_CPUS = "4"
+DEFAULT_CODE_EXECUTOR_PIDS_LIMIT = 512
+EDIT_PLAN_RE = re.compile(
+    r"\b(modify|update|change|edit|refactor|fix|replace|hash|check)\b",
+    flags=re.IGNORECASE,
+)
+INSPECTION_PLAN_RE = re.compile(
+    r"\b(read|inspect|print|show|list)\b",
+    flags=re.IGNORECASE,
+)
+FILE_PATH_RE = re.compile(
+    r"[\w./-]+\.(?:py|sql|txt|md|json|toml|yaml|yml|js|ts|vue|html|css|env|ini|cfg)",
+    flags=re.IGNORECASE,
+)
 CONTROL_FEEDBACK = {
     "",
     "/commit",
@@ -27,34 +49,6 @@ CONTROL_FEEDBACK = {
     "/quit",
     "/q",
 }
-
-IGNORE_DIRS = {
-    ".git",
-    "__pycache__",
-    "node_modules",
-    "venv",
-    "env",
-    ".venv",
-    "dist",
-    "build",
-    ".pytest_cache",
-}
-IGNORE_EXTS = {
-    ".pyc",
-    ".pyo",
-    ".pyd",
-    ".so",
-    ".dll",
-    ".exe",
-    ".jpg",
-    ".jpeg",
-    ".png",
-    ".gif",
-    ".pdf",
-    ".db",
-    ".sqlite3",
-}
-
 
 @dataclass(frozen=True)
 class ExecutionResult:
@@ -64,9 +58,29 @@ class ExecutionResult:
     stderr: str
 
 
+@dataclass(frozen=True)
+class CodeExecutionConfig:
+    executor: str = "host"
+    docker_image: str = ""
+    docker_network: str = "none"
+    timeout_seconds: int = DEFAULT_CODE_EXECUTOR_TIMEOUT_SECONDS
+    output_limit_bytes: int = DEFAULT_CODE_EXECUTOR_OUTPUT_LIMIT_BYTES
+    memory: str = DEFAULT_CODE_EXECUTOR_MEMORY
+    cpus: str = DEFAULT_CODE_EXECUTOR_CPUS
+    pids_limit: int = DEFAULT_CODE_EXECUTOR_PIDS_LIMIT
+
+
 class AgentState(TypedDict):
     goal: str
     prjdir: str
+    code_executor: str
+    code_executor_image: str
+    code_executor_network: str
+    code_executor_timeout_seconds: int
+    code_executor_output_limit_bytes: int
+    code_executor_memory: str
+    code_executor_cpus: str
+    code_executor_pids_limit: int
     chat_history: List[str]
     human_feedbacks: List[str]
     current_plan: str
@@ -79,80 +93,17 @@ class AgentState(TypedDict):
     pending_feedback: str
 
 
-def create_llm(config: LLMConfig | None = None) -> ChatOpenAI:
+def create_llm(config: LLMConfig | None = None) -> OpenAICompatibleChatClient:
     if config is None:
         config = load_llm_config()
     validate_llm_config(config)
-    return ChatOpenAI(
-        model_name=config.model,
-        base_url=config.api_base_url,
-        temperature=0.3,
-        api_key=config.api_key,
-    )
-
-
-def extract_symbols(filepath: str) -> list[str]:
-    ext = os.path.splitext(filepath)[1].lower()
-    symbols: list[str] = []
-    try:
-        with open(filepath, "r", encoding="utf-8") as f:
-            content = f.read()
-
-        if ext == ".py":
-            tree = ast.parse(content)
-            for node in ast.walk(tree):
-                if isinstance(node, ast.ClassDef):
-                    symbols.append(f"class {node.name}")
-                elif isinstance(node, ast.FunctionDef):
-                    symbols.append(f"def {node.name}")
-        elif ext in {".js", ".ts", ".vue"}:
-            class_matches = re.findall(
-                r"^[\s]*class\s+([a-zA-Z0-9_]+)",
-                content,
-                re.MULTILINE,
-            )
-            func_matches = re.findall(
-                r"^[\s]*(?:export\s+)?(?:async\s+)?function\s+([a-zA-Z0-9_]+)",
-                content,
-                re.MULTILINE,
-            )
-            const_func_matches = re.findall(
-                r"^[\s]*(?:export\s+)?const\s+([a-zA-Z0-9_]+)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[a-zA-Z0-9_]+)\s*=>",
-                content,
-                re.MULTILINE,
-            )
-            symbols.extend(f"class {match}" for match in class_matches)
-            symbols.extend(f"func {match}" for match in func_matches)
-            symbols.extend(f"func {match}" for match in const_func_matches)
-    except Exception:
-        pass
-    return symbols
+    return OpenAICompatibleChatClient(config, temperature=0.3)
 
 
 def make_tree(prjpath: str) -> str:
-    tree = ""
-    for root, dirs, files in os.walk(prjpath):
-        dirs[:] = [
-            d for d in dirs if d not in IGNORE_DIRS and not d.startswith(".")
-        ]
-        level = root.replace(prjpath, "").count(os.sep)
-        indent = " " * 4 * level
-        basename = os.path.basename(root)
+    from repo_map import RepomapGenerator
 
-        if basename:
-            tree += f"{indent}{basename}/\n"
-
-        subindent = " " * 4 * (level + 1)
-        for file_name in files:
-            ext = os.path.splitext(file_name)[1].lower()
-            if file_name.startswith(".") or ext in IGNORE_EXTS:
-                continue
-            filepath = os.path.join(root, file_name)
-            tree += f"{subindent}{file_name}\n"
-            for symbol in extract_symbols(filepath):
-                tree += f"{subindent}  - {symbol}\n"
-
-    return tree.strip() or "(empty project)"
+    return RepomapGenerator().get_map(prjpath, ensure_gitignore=False)
 
 
 def _is_escaped(text: str, index: int) -> bool:
@@ -253,18 +204,75 @@ def extract_code(text: str) -> str:
     )
 
 
-def execute_python_code(code: str, prjdir: str) -> ExecutionResult:
+def execute_python_code(
+    code: str,
+    prjdir: str,
+    executor: str = "host",
+    docker_image: str = "",
+    docker_network: str = "none",
+    timeout_seconds: int = DEFAULT_CODE_EXECUTOR_TIMEOUT_SECONDS,
+    output_limit_bytes: int = DEFAULT_CODE_EXECUTOR_OUTPUT_LIMIT_BYTES,
+    memory: str = DEFAULT_CODE_EXECUTOR_MEMORY,
+    cpus: str = DEFAULT_CODE_EXECUTOR_CPUS,
+    pids_limit: int = DEFAULT_CODE_EXECUTOR_PIDS_LIMIT,
+) -> ExecutionResult:
     temp_script_path = os.path.join(prjdir, ".agent_script.py")
     try:
+        code_to_run = code
+        if executor == "docker":
+            code_to_run = map_host_project_paths_for_docker(code, prjdir)
         with open(temp_script_path, "w", encoding="utf-8") as file:
-            file.write(code)
+            file.write(code_to_run)
 
-        result = subprocess.run(
-            [sys.executable, ".agent_script.py"],
-            cwd=prjdir,
-            capture_output=True,
-            text=True,
-        )
+        if executor == "host":
+            try:
+                result = subprocess.run(
+                    [sys.executable, ".agent_script.py"],
+                    cwd=prjdir,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout_seconds,
+                )
+            except subprocess.TimeoutExpired as exc:
+                result = subprocess.CompletedProcess(
+                    [sys.executable, ".agent_script.py"],
+                    124,
+                    stdout=_timeout_output_to_text(exc.stdout),
+                    stderr=(
+                        _timeout_output_to_text(exc.stderr)
+                        + f"\nExecution timed out after {timeout_seconds}s."
+                    ).strip(),
+                )
+            result = cap_completed_process_output(result, output_limit_bytes)
+        elif executor == "docker":
+            if not docker_image:
+                return ExecutionResult(
+                    success=False,
+                    returncode=2,
+                    stdout="",
+                    stderr=(
+                        "Docker code executor requires --code-executor-image "
+                        "or CODE_EXECUTOR_IMAGE."
+                    ),
+                )
+            result = execute_python_code_in_docker(
+                prjdir=prjdir,
+                script_name=".agent_script.py",
+                docker_image=docker_image,
+                docker_network=docker_network,
+                timeout_seconds=timeout_seconds,
+                output_limit_bytes=output_limit_bytes,
+                memory=memory,
+                cpus=cpus,
+                pids_limit=pids_limit,
+            )
+        else:
+            return ExecutionResult(
+                success=False,
+                returncode=2,
+                stdout="",
+                stderr=f"Unknown code executor: {executor}",
+            )
         return ExecutionResult(
             success=result.returncode == 0,
             returncode=result.returncode,
@@ -276,10 +284,215 @@ def execute_python_code(code: str, prjdir: str) -> ExecutionResult:
             os.remove(temp_script_path)
 
 
+def execute_python_code_in_docker(
+    prjdir: str,
+    script_name: str,
+    docker_image: str,
+    docker_network: str,
+    timeout_seconds: int,
+    output_limit_bytes: int,
+    memory: str,
+    cpus: str,
+    pids_limit: int,
+) -> subprocess.CompletedProcess[str]:
+    mount_target = DOCKER_EXECUTOR_PROJECT_DIR
+    with tempfile.TemporaryDirectory(prefix="webai-docker-") as temp_dir:
+        cidfile = os.path.join(temp_dir, "container.cid")
+        cmd = [
+            "docker",
+            "run",
+            "--rm",
+            "--cidfile",
+            cidfile,
+            "--network",
+            docker_network,
+            "--entrypoint",
+            "python",
+            "--read-only",
+            "--tmpfs",
+            "/tmp:rw,nosuid,nodev,size=512m",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges",
+            "--memory",
+            memory,
+            "--cpus",
+            cpus,
+            "--pids-limit",
+            str(pids_limit),
+        ]
+        if hasattr(os, "getuid") and hasattr(os, "getgid"):
+            cmd.extend(["--user", f"{os.getuid()}:{os.getgid()}"])
+        cmd.extend(
+            [
+                "-e",
+                "HOME=/tmp",
+                "-e",
+                "PYTHONDONTWRITEBYTECODE=1",
+                "--mount",
+                f"type=bind,src={os.path.abspath(prjdir)},dst={mount_target}",
+                "-w",
+                mount_target,
+                docker_image,
+                script_name,
+            ]
+        )
+
+        def cleanup_container() -> None:
+            try:
+                with open(cidfile, "r", encoding="utf-8") as file:
+                    container_id = file.read().strip()
+            except OSError:
+                return
+            if not container_id:
+                return
+            try:
+                subprocess.run(
+                    ["docker", "rm", "-f", container_id],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+            except (OSError, subprocess.SubprocessError):
+                logging.warning(
+                    "Failed to force-remove timed-out Docker container %s",
+                    container_id,
+                )
+
+        return run_capped_subprocess(
+            cmd,
+            timeout_seconds=timeout_seconds,
+            output_limit_bytes=output_limit_bytes,
+            on_timeout=cleanup_container,
+        )
+
+
+def run_capped_subprocess(
+    cmd: list[str],
+    cwd: str | None = None,
+    timeout_seconds: int = DEFAULT_CODE_EXECUTOR_TIMEOUT_SECONDS,
+    output_limit_bytes: int = DEFAULT_CODE_EXECUTOR_OUTPUT_LIMIT_BYTES,
+    on_timeout=None,
+) -> subprocess.CompletedProcess[str]:
+    with tempfile.TemporaryDirectory(prefix="webai-exec-") as temp_dir:
+        stdout_path = os.path.join(temp_dir, "stdout")
+        stderr_path = os.path.join(temp_dir, "stderr")
+        try:
+            with open(stdout_path, "wb") as stdout_file, open(
+                stderr_path,
+                "wb",
+            ) as stderr_file:
+                process = subprocess.Popen(
+                    cmd,
+                    cwd=cwd,
+                    stdout=stdout_file,
+                    stderr=stderr_file,
+                )
+                try:
+                    returncode = process.wait(timeout=timeout_seconds)
+                except subprocess.TimeoutExpired:
+                    if on_timeout is not None:
+                        on_timeout()
+                    process.kill()
+                    process.wait()
+                    return subprocess.CompletedProcess(
+                        cmd,
+                        124,
+                        stdout=read_limited_text(stdout_path, output_limit_bytes),
+                        stderr=(
+                            read_limited_text(stderr_path, output_limit_bytes)
+                            + f"\nExecution timed out after {timeout_seconds}s."
+                        ).strip(),
+                    )
+        except FileNotFoundError as exc:
+            executable = cmd[0] if cmd else "executable"
+            return subprocess.CompletedProcess(
+                cmd,
+                127,
+                stdout="",
+                stderr=f"{executable} executable not found: {exc}",
+            )
+        return subprocess.CompletedProcess(
+            cmd,
+            returncode,
+            stdout=read_limited_text(stdout_path, output_limit_bytes),
+            stderr=read_limited_text(stderr_path, output_limit_bytes),
+        )
+
+
+def cap_completed_process_output(
+    result: subprocess.CompletedProcess[str],
+    output_limit_bytes: int,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.CompletedProcess(
+        result.args,
+        result.returncode,
+        stdout=cap_text_bytes(result.stdout or "", output_limit_bytes),
+        stderr=cap_text_bytes(result.stderr or "", output_limit_bytes),
+    )
+
+
+def read_limited_text(path: str, limit_bytes: int) -> str:
+    try:
+        with open(path, "rb") as file:
+            data = file.read(max(limit_bytes, 0) + 1)
+    except OSError:
+        return ""
+    return cap_bytes(data, limit_bytes)
+
+
+def cap_text_bytes(text: str, limit_bytes: int) -> str:
+    return cap_bytes(text.encode("utf-8", errors="replace"), limit_bytes)
+
+
+def cap_bytes(data: bytes, limit_bytes: int) -> str:
+    if limit_bytes <= 0:
+        return ""
+    truncated = len(data) > limit_bytes
+    if truncated:
+        data = data[:limit_bytes]
+    text = data.decode("utf-8", errors="replace")
+    if truncated:
+        text += f"\n[...output truncated after {limit_bytes} bytes...]"
+    return text
+
+
+def _timeout_output_to_text(output: str | bytes | None) -> str:
+    if output is None:
+        return ""
+    if isinstance(output, bytes):
+        return output.decode("utf-8", errors="replace")
+    return output
+
+
+def map_host_project_paths_for_docker(code: str, prjdir: str) -> str:
+    return code.replace(os.path.abspath(prjdir), DOCKER_EXECUTOR_PROJECT_DIR)
+
+
 def format_history(history: List[str]) -> str:
     if not history:
         return "No actions taken yet."
-    return "\n".join(history)
+    return compact_text("\n".join(history), HISTORY_TOTAL_LIMIT)
+
+
+def compact_text(text: str, max_chars: int) -> str:
+    if max_chars <= 0 or len(text) <= max_chars:
+        return text
+    marker = (
+        "\n\n[...truncated "
+        f"{len(text) - max_chars} characters from the middle...]\n\n"
+    )
+    keep = max_chars - len(marker)
+    if keep <= 0:
+        return text[:max_chars]
+    head = keep // 2
+    tail = keep - head
+    return text[:head] + marker + text[-tail:]
+
+
+def compact_history_entry(entry: str) -> str:
+    return compact_text(entry, HISTORY_ENTRY_LIMIT)
 
 
 def is_control_feedback(feedback: str) -> bool:
@@ -314,6 +527,26 @@ def prevent_premature_done(plan: str, pending_feedback: str) -> str:
     return (
         "Handle the latest user feedback before finishing:\n"
         f"{pending_feedback}"
+    )
+
+
+def force_initial_inspection_for_existing_file_edits(
+    plan: str,
+    state: AgentState,
+) -> str:
+    if state.get("chat_history"):
+        return plan
+    if INSPECTION_PLAN_RE.search(plan):
+        return plan
+    if not EDIT_PLAN_RE.search(plan):
+        return plan
+    if not FILE_PATH_RE.search(plan):
+        return plan
+    return (
+        "Inspect the smallest relevant snippets before editing. "
+        "Print the exact current lines or compact function/table snippets "
+        "needed for this requested change, using project-relative paths only:\n"
+        f"{plan}"
     )
 
 
@@ -384,7 +617,7 @@ def get_commit_preview(prjdir: str, dirty_files: list[str]) -> str:
     return "\n\n".join(preview_parts) or "No textual diff available."
 
 
-def generate_commit_message(llm: ChatOpenAI, preview: str) -> str:
+def generate_commit_message(llm: OpenAICompatibleChatClient, preview: str) -> str:
     system_prompt = (
         "You write concise git commit messages. "
         "Return only the commit message, with no Markdown fences or explanation."
@@ -400,13 +633,20 @@ def generate_commit_message(llm: ChatOpenAI, preview: str) -> str:
     return invoke_text(llm, system_prompt, user_prompt).strip()
 
 
-def invoke_text(llm: ChatOpenAI, system_prompt: str, user_prompt: str) -> str:
+def invoke_text(
+    llm: OpenAICompatibleChatClient,
+    system_prompt: str,
+    user_prompt: str,
+) -> str:
+    started_at = time.monotonic()
     response = llm.invoke(
         [
             SystemMessage(content=system_prompt),
             HumanMessage(content=user_prompt),
         ]
     )
+    elapsed = time.monotonic() - started_at
+    logging.debug("LLM invoke completed elapsed_seconds=%.3f", elapsed)
     return str(response.content).strip()
 
 
@@ -417,7 +657,7 @@ def debug_llm_call(
     response: str,
 ) -> None:
     debug_user_prompt = re.sub(
-        r"(CURRENT FILE STRUCTURE & SYMBOLS:\n).*?(?=\n\n(ACTION HISTORY|LAST SCRIPT EXECUTION RESULT|TASK FROM ARCHITECT):)",
+        r"(CURRENT FILE STRUCTURE & SYMBOLS(?: [^\n]*)?:\n).*?(?=\n\n(ACTION HISTORY|LAST SCRIPT EXECUTION RESULT|TASK FROM ARCHITECT):)",
         r"\1[FILE TREE OMITTED IN DEBUG LOGS...]\n",
         user_prompt,
         flags=re.DOTALL,
@@ -427,7 +667,7 @@ def debug_llm_call(
     logging.debug("LLM node=%s response=%s", node_name, response)
 
 
-def make_thinker(llm: ChatOpenAI):
+def make_thinker(llm: OpenAICompatibleChatClient):
     def thinker(state: AgentState):
         console.print(
             Panel(
@@ -454,14 +694,18 @@ def make_thinker(llm: ChatOpenAI):
             "RULES:\n"
             "1. Do not write code.\n"
             "2. Plan one concrete next step only.\n"
-            "3. If file contents are needed, ask the Implementor to read and print them.\n"
+            "3. If file contents are needed, ask for the smallest relevant snippets, symbols, or line ranges; avoid full-file dumps unless the whole file is clearly needed.\n"
             "4. Treat user feedback as active follow-up requirements that may extend or supersede the original goal.\n"
-            "5. If the goal and all actionable user feedback are fully achieved, output only: [DONE]"
+            "5. Generated scripts run from the project root; use project-relative paths in plans, not host absolute project paths.\n"
+            "6. If the goal and all actionable user feedback are fully achieved, output only: [DONE]"
         )
         user_prompt = (
-            f"PROJECT DIRECTORY: {state['prjdir']}\n\n"
+            f"PROJECT DIRECTORY HOST PATH: {state['prjdir']}\n"
+            "SCRIPT WORKING DIRECTORY: project root. Treat the host path as context only.\n\n"
             f"PROJECT GOAL:\n{state['goal']}\n\n"
-            f"CURRENT FILE STRUCTURE & SYMBOLS:\n{tree}\n\n"
+            "CURRENT FILE STRUCTURE & SYMBOLS "
+            "(fresh snapshot generated immediately before this decision):\n"
+            f"{tree}\n\n"
             f"ACTION HISTORY:\n{history_text}\n\n"
             f"USER FEEDBACK:\n{feedback_text}\n\n"
             f"{last_result}"
@@ -470,6 +714,7 @@ def make_thinker(llm: ChatOpenAI):
         with console.status("[bold green]Consulting LLM...[/bold green]", spinner="dots"):
             plan = invoke_text(llm, system_prompt, user_prompt)
         plan = prevent_premature_done(plan, state.get("pending_feedback", ""))
+        plan = force_initial_inspection_for_existing_file_edits(plan, state)
         debug_llm_call("thinker", system_prompt, user_prompt, plan)
         console.print(
             Panel(
@@ -488,7 +733,7 @@ def make_thinker(llm: ChatOpenAI):
     return thinker
 
 
-def make_verify_completion(llm: ChatOpenAI):
+def make_verify_completion(llm: OpenAICompatibleChatClient):
     def verify_completion(state: AgentState):
         console.print(
             Panel(
@@ -544,7 +789,7 @@ def make_verify_completion(llm: ChatOpenAI):
     return verify_completion
 
 
-def make_implementor(llm: ChatOpenAI):
+def make_implementor(llm: OpenAICompatibleChatClient):
     def implementor(state: AgentState):
         console.print(
             Panel(
@@ -562,7 +807,6 @@ def make_implementor(llm: ChatOpenAI):
                 "LAST SCRIPT EXECUTION RESULT:\n"
                 f"{state['chat_history'][-1]}\n\n"
             )
-
         system_prompt = (
             "You are the Implementor agent. Write one Python script that "
             "executes the Architect task.\n\n"
@@ -574,10 +818,17 @@ def make_implementor(llm: ChatOpenAI):
             "5. If a required file or pattern is missing, raise an exception.\n"
             "6. For multiline file content, prefer Path(...).write_text('\\n'.join([...]) + '\\n', encoding='utf-8'); do not put Markdown code fences inside Python triple-quoted strings.\n"
             "7. Preserve exact validation text from the task; if a command must print `ok`, print exactly `ok`.\n"
-            "8. If a validation flag such as --check is required, make that path run before optional third-party imports so validation works in a fresh environment."
+            "8. If a validation flag such as --check is required, make that path run before optional third-party imports so validation works in a fresh environment.\n"
+            "9. Ignore host absolute project paths in the Architect task; convert them to paths relative to the current working directory.\n"
+            "10. If the Architect task asks to inspect, read, print, show, or list snippets, do only that inspection and do not edit files.\n"
+            "11. Keep the script compact and robust; prefer direct exact replacements for known text, and avoid broad regex rewrites when a literal replacement is enough."
         )
         user_prompt = (
-            f"CURRENT FILE STRUCTURE & SYMBOLS:\n{tree}\n\n"
+            f"PROJECT DIRECTORY HOST PATH: {state['prjdir']}\n"
+            "SCRIPT WORKING DIRECTORY: project root. Use relative paths from here.\n\n"
+            "CURRENT FILE STRUCTURE & SYMBOLS "
+            "(fresh snapshot generated immediately before this script request):\n"
+            f"{tree}\n\n"
             f"{last_result}"
             f"TASK FROM ARCHITECT:\n{state['current_plan']}\n"
         )
@@ -592,7 +843,17 @@ def make_implementor(llm: ChatOpenAI):
             "[bold green]Generating implementation...[/bold green]",
             spinner="dots",
         ):
-            raw_response = invoke_text(llm, system_prompt, user_prompt)
+            try:
+                raw_response = invoke_text(llm, system_prompt, user_prompt)
+            except LLMTransportError as exc:
+                logging.warning("Implementor LLM transport failed: %s", exc)
+                error = str(exc).replace("\\", "\\\\").replace('"', '\\"')
+                return {
+                    "current_code": (
+                        'raise RuntimeError("LLM transport failed while generating '
+                        f'implementation: {error}")'
+                    )
+                }
         debug_llm_call("implementor", system_prompt, user_prompt, raw_response)
         return {"current_code": extract_code(raw_response)}
 
@@ -606,7 +867,27 @@ def execute_code(state: AgentState):
             border_style="cyan",
         )
     )
-    result = execute_python_code(state["current_code"], state["prjdir"])
+    result = execute_python_code(
+        state["current_code"],
+        state["prjdir"],
+        executor=state.get("code_executor", "host"),
+        docker_image=state.get("code_executor_image", ""),
+        docker_network=state.get("code_executor_network", "none"),
+        timeout_seconds=state.get(
+            "code_executor_timeout_seconds",
+            DEFAULT_CODE_EXECUTOR_TIMEOUT_SECONDS,
+        ),
+        output_limit_bytes=state.get(
+            "code_executor_output_limit_bytes",
+            DEFAULT_CODE_EXECUTOR_OUTPUT_LIMIT_BYTES,
+        ),
+        memory=state.get("code_executor_memory", DEFAULT_CODE_EXECUTOR_MEMORY),
+        cpus=state.get("code_executor_cpus", DEFAULT_CODE_EXECUTOR_CPUS),
+        pids_limit=state.get(
+            "code_executor_pids_limit",
+            DEFAULT_CODE_EXECUTOR_PIDS_LIMIT,
+        ),
+    )
     if result.success:
         console.print(
             Panel(
@@ -635,10 +916,10 @@ def execute_code(state: AgentState):
         log_entry = (
             f"Architect planned: {state['current_plan'][:500]}\n"
             "Result: SUCCESS\n"
-            f"STDOUT:\n{result.stdout[:10000]}"
+            f"STDOUT:\n{compact_text(result.stdout, SCRIPT_OUTPUT_HISTORY_LIMIT)}"
         )
         return {
-            "chat_history": state["chat_history"] + [log_entry],
+            "chat_history": state["chat_history"] + [compact_history_entry(log_entry)],
             "last_error": "",
             "implementor_retries": 0,
             "pending_feedback": "",
@@ -647,8 +928,8 @@ def execute_code(state: AgentState):
     next_retries = state["implementor_retries"] + 1
     error_report = (
         f"Execution failed with exit code {result.returncode}.\n"
-        f"STDOUT:\n{result.stdout[:10000]}\n"
-        f"STDERR:\n{result.stderr[:10000]}"
+        f"STDOUT:\n{compact_text(result.stdout, SCRIPT_OUTPUT_HISTORY_LIMIT)}\n"
+        f"STDERR:\n{compact_text(result.stderr, SCRIPT_OUTPUT_HISTORY_LIMIT)}"
     )
     console.print(
         Panel(
@@ -663,9 +944,11 @@ def execute_code(state: AgentState):
     }
     if next_retries >= 3:
         update["chat_history"] = state["chat_history"] + [
-            f"Architect planned: {state['current_plan'][:500]}\n"
-            f"Result: FAILURE after {next_retries} implementor attempts\n"
-            f"{error_report}"
+            compact_history_entry(
+                f"Architect planned: {state['current_plan'][:500]}\n"
+                f"Result: FAILURE after {next_retries} implementor attempts\n"
+                f"{error_report}"
+            )
         ]
     return update
 
@@ -712,7 +995,10 @@ def make_ask_user():
     return ask_user
 
 
-def make_route_after_answer(commits_enabled: bool, llm: ChatOpenAI | None = None):
+def make_route_after_answer(
+    commits_enabled: bool,
+    llm: OpenAICompatibleChatClient | None = None,
+):
     def route_after_answer(state: AgentState):
         last = state["human_feedbacks"][-1].strip()
         if last in {"", "/exit", "/quit", "/q"}:
@@ -837,8 +1123,11 @@ def get_initial_state(
     max_steps: int = 30,
     patience: int = 5,
     action_memory_size: int = 5,
+    code_execution: CodeExecutionConfig | None = None,
 ):
     del patience, action_memory_size
+    if code_execution is None:
+        code_execution = CodeExecutionConfig()
     full_goal = goal
     if spec:
         full_goal = (
@@ -851,6 +1140,14 @@ def get_initial_state(
         {
             "goal": full_goal,
             "prjdir": prjdir,
+            "code_executor": code_execution.executor,
+            "code_executor_image": code_execution.docker_image,
+            "code_executor_network": code_execution.docker_network,
+            "code_executor_timeout_seconds": code_execution.timeout_seconds,
+            "code_executor_output_limit_bytes": code_execution.output_limit_bytes,
+            "code_executor_memory": code_execution.memory,
+            "code_executor_cpus": code_execution.cpus,
+            "code_executor_pids_limit": code_execution.pids_limit,
             "chat_history": [],
             "human_feedbacks": [],
             "current_plan": "",

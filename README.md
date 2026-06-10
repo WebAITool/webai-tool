@@ -105,6 +105,9 @@ Arguments:
 - `--enable-commits`: optional. Allows the agent to commit generated changes in the target project.
 - `--commit-branch`: branch used for agent commits when commits are enabled. Defaults to `dev`.
 - `--interactive`: optional. Prompts for user feedback after the agent confirms completion. Non-interactive is the default and is recommended for Docker and CI runs.
+- `--code-executor`: where generated Python scripts run. Defaults to `host`; use `docker` to keep the agent on the host and run generated code in Docker.
+- `--code-executor-image`: required when `--code-executor=docker`. Use the release image you built locally, for example `webai-tool:release`.
+- `--code-executor-network`: Docker network for generated code. Defaults to `none`.
 
 `--docpath` and `--refprjpath` are mutually exclusive.
 
@@ -201,6 +204,45 @@ docker run --rm \
 
 Host networking is a troubleshooting option for Docker network environments where the default bridge has no outbound provider access.
 
+## Host Agent With Docker Code Executor
+
+For local development and benchmarks, you can keep the agent process on the
+host and use Docker only for generated-code execution. In this mode, LLM
+requests use the host network stack, while each generated Python script runs in
+a short-lived Docker container with the project mounted at `/workspace/project`.
+
+From the repository root:
+
+```bash
+uv run python src/main.py \
+  --prjdir "$PWD/demo-workspace" \
+  --docpath "$PWD/demo-workspace/project-doc.md" \
+  --code-executor docker \
+  --code-executor-image webai-tool:release \
+  "$PWD/demo-workspace/task.txt"
+```
+
+The Docker executor requires an explicit image. It defaults to `--network none`
+and runs generated code with a read-only container filesystem, a writable
+project mount, dropped Linux capabilities, `no-new-privileges`, and high-ceiling
+resource bounds: 600 seconds, 4 GiB memory, 4 CPUs, 512 pids, and 4 MiB captured
+output per stream. Override these only when the generated code intentionally
+needs more:
+
+```bash
+CODE_EXECUTOR=docker
+CODE_EXECUTOR_IMAGE=webai-tool:release
+CODE_EXECUTOR_DOCKER_NETWORK=none
+CODE_EXECUTOR_TIMEOUT_SECONDS=600
+CODE_EXECUTOR_OUTPUT_LIMIT_BYTES=4194304
+CODE_EXECUTOR_MEMORY=4g
+CODE_EXECUTOR_CPUS=4
+CODE_EXECUTOR_PIDS_LIMIT=512
+```
+
+LLM calls are separate from generated-code execution. By default,
+`LLM_READ_TIMEOUT_SECONDS=0` keeps long model reasoning unbounded.
+
 Interactive feedback is opt-in. Use an interactive terminal only when you intentionally want post-completion feedback prompts:
 
 ```bash
@@ -225,6 +267,15 @@ Run unit tests:
 ```bash
 uv run python -m pytest tests/unit/ -v
 ```
+
+Run the production LLM transport probe:
+
+```bash
+uv run python scripts/llm_transport_probe.py --env-file .env --runs 3 --mode both
+```
+
+The probe uses the same `OpenAICompatibleChatClient` path as the release agent
+and expects the model to answer exactly `pong`.
 
 Run Ruff:
 

@@ -23,7 +23,9 @@ from repo_map import (
 
 def _extract_tags_with_receivers_from_source(source: bytes, lang: str):
     """Helper: write bytes to temp file, extract tags and receivers."""
-    import tempfile, os
+    import os
+    import tempfile
+
     suffix = {"python": ".py", "javascript": ".js", "typescript": ".ts"}.get(lang, ".py")
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
         f.write(source)
@@ -263,6 +265,19 @@ class TestRepomapGenerator:
 
             with open(os.path.join(cache_dir, ".gitignore"), encoding="utf-8") as f:
                 assert f.read() == "*\n"
+        finally:
+            shutil.rmtree(tmpdir)
+
+    def test_get_map_can_skip_repo_graph_gitignore_side_effect(self):
+        tmpdir = tempfile.mkdtemp()
+        try:
+            cache_dir = os.path.join(tmpdir, ".repo-graph")
+            os.makedirs(cache_dir)
+
+            gen = RepomapGenerator()
+            gen.get_map(tmpdir, ensure_gitignore=False)
+
+            assert not os.path.exists(os.path.join(cache_dir, ".gitignore"))
         finally:
             shutil.rmtree(tmpdir)
 
@@ -522,7 +537,9 @@ const Button = ({ label }) => <button>{label}</button>;
 
 class TestRepoMapWithReferences:
     def test_inline_references_shown(self):
-        import tempfile, shutil
+        import shutil
+        import tempfile
+
         tmpdir = tempfile.mkdtemp()
         try:
             with open(os.path.join(tmpdir, "auth.py"), "w") as f:
@@ -536,7 +553,9 @@ class TestRepoMapWithReferences:
             shutil.rmtree(tmpdir)
 
     def test_no_references_by_default(self):
-        import tempfile, shutil
+        import shutil
+        import tempfile
+
         tmpdir = tempfile.mkdtemp()
         try:
             with open(os.path.join(tmpdir, "auth.py"), "w") as f:
@@ -615,7 +634,7 @@ class TestBoundariesAndLimits:
         """Catches mutation: removing 'resolved != cwd' in traversal check."""
         cwd = os.getcwd()
         result = get_repo_structure.invoke({"root_path": cwd})
-        assert "Error" not in result
+        assert not result.startswith("Error:")
 
     def test_path_traversal_sep_sensitivity(self):
         """Catches mutation: changing os.sep to hardcoded '/' in traversal check."""
@@ -629,7 +648,7 @@ class TestBoundariesAndLimits:
     def test_get_repo_structure_default_cwd(self):
         """Test the most common invocation: root_path=None (defaults to cwd)."""
         result = get_repo_structure.invoke({})
-        assert "Error" not in result
+        assert not result.startswith("Error:")
 
     def test_env_file_excluded(self):
         """Sensitive .env files should not appear in repomap output."""

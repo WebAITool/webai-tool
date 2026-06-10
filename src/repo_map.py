@@ -419,7 +419,12 @@ def _tag_label(tag: Tag) -> str:
 class RepomapGenerator:
     """Generates a lightweight repository map suitable for LLM context."""
 
-    def get_map(self, root_path: str, show_references: bool = False) -> str:
+    def get_map(
+        self,
+        root_path: str,
+        show_references: bool = False,
+        ensure_gitignore: bool = True,
+    ) -> str:
         """Return a tree-like string representation of the project structure.
 
         The tree includes:
@@ -430,6 +435,8 @@ class RepomapGenerator:
         Args:
             root_path: Absolute or relative path to the project root.
             show_references: If True, append a cross-file references section.
+            ensure_gitignore: If True, make generated graph caches ignore
+                their own contents. Disable this for read-only context snapshots.
 
         Returns:
             A multi-line string with indented tree structure.
@@ -438,7 +445,8 @@ class RepomapGenerator:
         if not os.path.isdir(root_path):
             return f"Error: '{root_path}' is not a valid directory."
 
-        _ensure_repo_graph_gitignore(root_path)
+        if ensure_gitignore:
+            _ensure_repo_graph_gitignore(root_path)
 
         lines: list[str] = []
         all_tags: list[Tag] = []

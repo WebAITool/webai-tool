@@ -14,15 +14,6 @@ def _load_lg_agent(monkeypatch):
     monkeypatch.setitem(sys.modules, "langchain_core", types.ModuleType("langchain_core"))
     monkeypatch.setitem(sys.modules, "langchain_core.messages", messages_module)
 
-    openai_module = types.ModuleType("langchain_openai")
-
-    class ChatOpenAI:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
-
-    openai_module.ChatOpenAI = ChatOpenAI
-    monkeypatch.setitem(sys.modules, "langchain_openai", openai_module)
-
     graph_module = types.ModuleType("langgraph.graph")
     graph_module.END = "__end__"
 
@@ -66,16 +57,23 @@ def test_create_llm_uses_resolved_openai_compatible_config(monkeypatch):
         api_base_url="https://resolved.example/v1",
         model="provider/resolved-model",
         frontend_vision_model="provider/vision",
+        streaming=True,
+        stream_fallback_to_non_stream=True,
+        max_retries=5,
+        connect_timeout_seconds=1.0,
+        read_timeout_seconds=2.0,
+        write_timeout_seconds=3.0,
+        pool_timeout_seconds=4.0,
     )
 
     llm = lg_agent.create_llm(config)
 
-    assert llm.kwargs == {
-        "model_name": "provider/resolved-model",
-        "base_url": "https://resolved.example/v1",
-        "temperature": 0.3,
-        "api_key": "resolved-key",
-    }
+    assert llm.config is config
+    assert llm.temperature == 0.3
+    assert llm.timeout.connect == 1.0
+    assert llm.timeout.read == 2.0
+    assert llm.timeout.write == 3.0
+    assert llm.timeout.pool == 4.0
 
 
 def test_create_agent_wires_release_graph_nodes(monkeypatch):
@@ -174,6 +172,72 @@ def test_thinker_does_not_accept_done_when_feedback_is_pending(monkeypatch):
         "append SUPER OK to RESULT.txt"
     )
     assert lg_agent.route_after_thinker({**state, **update}) == "implementor"
+
+
+def test_thinker_forces_initial_inspection_before_existing_file_edits(monkeypatch):
+    lg_agent = _load_lg_agent(monkeypatch)
+    thinker = lg_agent.make_thinker(object())
+    state = lg_agent.get_initial_state(goal="hash passwords", spec="", prjdir="/tmp/project")
+
+    monkeypatch.setattr(
+        lg_agent,
+        "make_tree",
+        lambda prjdir: "backend/schema.sql\nbackend/app/routes/auth.py",
+    )
+    monkeypatch.setattr(
+        lg_agent,
+        "invoke_text",
+        lambda *args: (
+            "Modify backend/schema.sql and backend/app/routes/auth.py to use bcrypt."
+        ),
+    )
+
+    update = thinker(state)
+
+    assert update["current_plan"].startswith(
+        "Inspect the smallest relevant snippets before editing."
+    )
+    assert "backend/schema.sql" in update["current_plan"]
+    assert "backend/app/routes/auth.py" in update["current_plan"]
+
+
+def test_initial_inspection_guard_keeps_new_file_plan(monkeypatch):
+    lg_agent = _load_lg_agent(monkeypatch)
+    state = lg_agent.get_initial_state(goal="create result", spec="", prjdir="/tmp/project")
+
+    plan = lg_agent.force_initial_inspection_for_existing_file_edits(
+        "Create RESULT.txt with OK.",
+        state,
+    )
+
+    assert plan == "Create RESULT.txt with OK."
+
+
+def test_implementor_uses_llm_for_inspection_plans(monkeypatch):
+    lg_agent = _load_lg_agent(monkeypatch)
+    captured = {}
+
+    class InspectLLM:
+        def invoke(self, messages):
+            captured["messages"] = messages
+            return types.SimpleNamespace(
+                content=(
+                    "```python\n"
+                    "from pathlib import Path\n"
+                    "print(Path('backend/schema.sql').read_text())\n"
+                    "```"
+                )
+            )
+
+    monkeypatch.setattr(lg_agent, "make_tree", lambda prjdir: "backend/schema.sql")
+    state = lg_agent.get_initial_state(goal="inspect", spec="", prjdir="/tmp/project")
+    state["current_plan"] = "Read backend/schema.sql snippets."
+    implementor = lg_agent.make_implementor(InspectLLM())
+
+    update = implementor(state)
+
+    assert "backend/schema.sql" in update["current_code"]
+    assert "messages" in captured
 
 
 def test_verify_completion_includes_actionable_feedback(monkeypatch):
@@ -352,7 +416,7 @@ def test_execute_code_records_failure_after_retry_exhaustion(monkeypatch):
     monkeypatch.setattr(
         lg_agent,
         "execute_python_code",
-        lambda code, prjdir: lg_agent.ExecutionResult(
+        lambda code, prjdir, **kwargs: lg_agent.ExecutionResult(
             success=False,
             returncode=1,
             stdout="",
@@ -382,7 +446,7 @@ def test_execute_code_clears_pending_feedback_after_success(monkeypatch):
     monkeypatch.setattr(
         lg_agent,
         "execute_python_code",
-        lambda code, prjdir: lg_agent.ExecutionResult(
+        lambda code, prjdir, **kwargs: lg_agent.ExecutionResult(
             success=True,
             returncode=0,
             stdout="",
@@ -403,6 +467,115 @@ def test_execute_code_clears_pending_feedback_after_success(monkeypatch):
     assert update["pending_feedback"] == ""
 
 
+def test_execute_code_compacts_large_stdout_in_history(monkeypatch):
+    lg_agent = _load_lg_agent(monkeypatch)
+    long_stdout = "A" * 5000 + "KEEP_TAIL"
+
+    monkeypatch.setattr(
+        lg_agent,
+        "execute_python_code",
+        lambda code, prjdir, **kwargs: lg_agent.ExecutionResult(
+            success=True,
+            returncode=0,
+            stdout=long_stdout,
+            stderr="",
+        ),
+    )
+    state = lg_agent.get_initial_state(
+        goal="inspect files",
+        spec="",
+        prjdir="/tmp/project",
+    )
+    state["current_plan"] = "Read a large file."
+    state["current_code"] = "pass"
+
+    update = lg_agent.execute_code(state)
+
+    history_entry = update["chat_history"][-1]
+    assert len(history_entry) <= lg_agent.HISTORY_ENTRY_LIMIT
+    assert "truncated" in history_entry
+    assert "KEEP_TAIL" in history_entry
+
+
+def test_format_history_compacts_total_history(monkeypatch):
+    lg_agent = _load_lg_agent(monkeypatch)
+    history = ["A" * 8000, "B" * 8000]
+
+    formatted = lg_agent.format_history(history)
+
+    assert len(formatted) <= lg_agent.HISTORY_TOTAL_LIMIT
+    assert "truncated" in formatted
+
+
+def test_openai_compatible_client_falls_back_to_non_stream(monkeypatch):
+    lg_agent = _load_lg_agent(monkeypatch)
+    from llm_client import LLMTransportError, OpenAICompatibleChatClient
+
+    config = lg_agent.LLMConfig(
+        api_key="key",
+        api_base_url="https://example.test/v1",
+        model="provider/model",
+        frontend_vision_model="provider/vision",
+        streaming=True,
+        stream_fallback_to_non_stream=True,
+        max_retries=0,
+    )
+    client = OpenAICompatibleChatClient(config)
+    calls = []
+
+    def fail_stream(messages, attempt):
+        calls.append(("stream", attempt))
+        raise LLMTransportError("no content")
+
+    def pass_non_stream(messages, attempt):
+        calls.append(("non-stream", attempt))
+        return "OK"
+
+    monkeypatch.setattr(client, "_invoke_stream", fail_stream)
+    monkeypatch.setattr(client, "_invoke_non_stream", pass_non_stream)
+
+    response = client.invoke([])
+
+    assert response.content == "OK"
+    assert calls == [("stream", 1), ("non-stream", 1)]
+
+
+def test_openai_compatible_client_wraps_malformed_json(monkeypatch):
+    _load_lg_agent(monkeypatch)
+    from llm_client import LLMTransportError, _load_json
+
+    try:
+        _load_json("{not-json", "stream response chunk")
+    except LLMTransportError as exc:
+        assert "Malformed JSON" in str(exc)
+        assert "stream response chunk" in str(exc)
+    else:
+        raise AssertionError("Malformed JSON should be an LLMTransportError")
+
+
+def test_implementor_turns_transport_failure_into_retryable_code(monkeypatch):
+    lg_agent = _load_lg_agent(monkeypatch)
+    from llm_client import LLMTransportError
+
+    class FailingLLM:
+        def invoke(self, messages):
+            raise LLMTransportError("body stalled")
+
+    monkeypatch.setattr(lg_agent, "make_tree", lambda prjdir: "project/")
+    implementor = lg_agent.make_implementor(FailingLLM())
+    state = lg_agent.get_initial_state(
+        goal="change file",
+        spec="",
+        prjdir="/tmp/project",
+    )
+    state["current_plan"] = "Edit RESULT.txt"
+
+    update = implementor(state)
+
+    assert update["current_code"].startswith("raise RuntimeError")
+    assert "LLM transport failed" in update["current_code"]
+
+
 def test_execute_python_code_uses_current_interpreter(tmp_path, monkeypatch):
     lg_agent = _load_lg_agent(monkeypatch)
     calls = []
@@ -417,6 +590,172 @@ def test_execute_python_code_uses_current_interpreter(tmp_path, monkeypatch):
 
     assert result.success
     assert calls[0][0][0] == sys.executable
+
+
+def test_execute_python_code_can_use_docker_executor(tmp_path, monkeypatch):
+    lg_agent = _load_lg_agent(monkeypatch)
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return subprocess.CompletedProcess(cmd, 0, stdout="ok\n", stderr="")
+
+    monkeypatch.setattr(lg_agent, "run_capped_subprocess", fake_run)
+
+    result = lg_agent.execute_python_code(
+        "print('ok')",
+        str(tmp_path),
+        executor="docker",
+        docker_image="webai-tool:test",
+        docker_network="none",
+    )
+
+    assert result.success
+    assert result.stdout == "ok"
+    cmd = calls[0][0]
+    assert cmd[:3] == ["docker", "run", "--rm"]
+    assert "--network" in cmd
+    assert cmd[cmd.index("--network") + 1] == "none"
+    assert "--read-only" in cmd
+    assert "--cap-drop" in cmd
+    assert "ALL" == cmd[cmd.index("--cap-drop") + 1]
+    assert "--security-opt" in cmd
+    assert "no-new-privileges" == cmd[cmd.index("--security-opt") + 1]
+    assert "--memory" in cmd
+    assert "4g" == cmd[cmd.index("--memory") + 1]
+    assert "--cpus" in cmd
+    assert "4" == cmd[cmd.index("--cpus") + 1]
+    assert "--pids-limit" in cmd
+    assert "512" == cmd[cmd.index("--pids-limit") + 1]
+    assert "--entrypoint" in cmd
+    assert "python" == cmd[cmd.index("--entrypoint") + 1]
+    assert "--mount" in cmd
+    assert f"type=bind,src={tmp_path},dst=/workspace/project" in cmd
+    assert "-w" in cmd
+    assert "/workspace/project" in cmd
+    assert "webai-tool:test" in cmd
+    assert cmd[-2:] == ["webai-tool:test", ".agent_script.py"]
+    if hasattr(lg_agent.os, "getuid") and hasattr(lg_agent.os, "getgid"):
+        assert "--user" in cmd
+        assert f"{lg_agent.os.getuid()}:{lg_agent.os.getgid()}" in cmd
+    assert not (tmp_path / ".agent_script.py").exists()
+
+
+def test_docker_executor_requires_explicit_image(tmp_path, monkeypatch):
+    lg_agent = _load_lg_agent(monkeypatch)
+
+    result = lg_agent.execute_python_code(
+        "print('ok')",
+        str(tmp_path),
+        executor="docker",
+        docker_image="",
+    )
+
+    assert not result.success
+    assert result.returncode == 2
+    assert "requires --code-executor-image" in result.stderr
+    assert not (tmp_path / ".agent_script.py").exists()
+
+
+def test_docker_executor_maps_host_project_path_to_container_path(
+    tmp_path, monkeypatch
+):
+    lg_agent = _load_lg_agent(monkeypatch)
+    captured = {}
+    code = (
+        "from pathlib import Path\n"
+        f"Path({str(tmp_path / 'RESULT.txt')!r}).write_text('OK')\n"
+    )
+
+    def fake_execute(prjdir, script_name, docker_image, docker_network, **kwargs):
+        captured["code"] = (tmp_path / script_name).read_text(encoding="utf-8")
+        return subprocess.CompletedProcess(
+            ["docker"],
+            0,
+            stdout="",
+            stderr="",
+        )
+
+    monkeypatch.setattr(lg_agent, "execute_python_code_in_docker", fake_execute)
+
+    result = lg_agent.execute_python_code(
+        code,
+        str(tmp_path),
+        executor="docker",
+        docker_image="webai-tool:test",
+    )
+
+    assert result.success
+    assert str(tmp_path) not in captured["code"]
+    assert lg_agent.DOCKER_EXECUTOR_PROJECT_DIR in captured["code"]
+    assert not (tmp_path / ".agent_script.py").exists()
+
+
+def test_docker_executor_times_out_and_caps_output(monkeypatch):
+    lg_agent = _load_lg_agent(monkeypatch)
+    calls = []
+    callbacks = []
+
+    class FakeProcess:
+        def __init__(self):
+            self.waits = 0
+
+        def wait(self, timeout=None):
+            self.waits += 1
+            if self.waits == 1:
+                raise subprocess.TimeoutExpired(["docker"], timeout)
+            return 124
+
+        def kill(self):
+            calls.append("kill")
+
+    def fake_popen(cmd, **kwargs):
+        stdout = kwargs["stdout"]
+        stderr = kwargs["stderr"]
+        stdout.write(b"A" * 20)
+        stderr.write(b"B" * 20)
+        stdout.flush()
+        stderr.flush()
+        return FakeProcess()
+
+    monkeypatch.setattr(lg_agent.subprocess, "Popen", fake_popen)
+
+    result = lg_agent.run_capped_subprocess(
+        ["docker"],
+        timeout_seconds=1,
+        output_limit_bytes=5,
+        on_timeout=lambda: callbacks.append("cleanup"),
+    )
+
+    assert result.returncode == 124
+    assert "AAAAA" in result.stdout
+    assert "truncated after 5 bytes" in result.stdout
+    assert "Execution timed out after 1s." in result.stderr
+    assert calls == ["kill"]
+    assert callbacks == ["cleanup"]
+
+
+def test_get_initial_state_records_code_execution_config(monkeypatch):
+    lg_agent = _load_lg_agent(monkeypatch)
+
+    state = lg_agent.get_initial_state(
+        goal="change project",
+        prjdir="/tmp/project",
+        code_execution=lg_agent.CodeExecutionConfig(
+            executor="docker",
+            docker_image="webai-tool:test",
+            docker_network="bridge",
+        ),
+    )
+
+    assert state["code_executor"] == "docker"
+    assert state["code_executor_image"] == "webai-tool:test"
+    assert state["code_executor_network"] == "bridge"
+    assert state["code_executor_timeout_seconds"] == lg_agent.DEFAULT_CODE_EXECUTOR_TIMEOUT_SECONDS
+    assert state["code_executor_output_limit_bytes"] == lg_agent.DEFAULT_CODE_EXECUTOR_OUTPUT_LIMIT_BYTES
+    assert state["code_executor_memory"] == lg_agent.DEFAULT_CODE_EXECUTOR_MEMORY
+    assert state["code_executor_cpus"] == lg_agent.DEFAULT_CODE_EXECUTOR_CPUS
+    assert state["code_executor_pids_limit"] == lg_agent.DEFAULT_CODE_EXECUTOR_PIDS_LIMIT
 
 
 def test_route_after_thinker_accepts_done_marker_with_extra_text(monkeypatch):

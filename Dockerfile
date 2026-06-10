@@ -27,6 +27,7 @@ RUN useradd --create-home --uid 10001 appuser \
     && chown -R appuser:appuser /app /workspace /ms-playwright
 
 COPY --chown=appuser:appuser src ./src
+COPY --chown=appuser:appuser scripts ./scripts
 COPY --chown=appuser:appuser README.md ./
 
 USER appuser

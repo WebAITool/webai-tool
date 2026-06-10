@@ -1,20 +1,85 @@
-import warnings
-warnings.filterwarnings("ignore", category=FutureWarning, module="smolagents")
-warnings.filterwarnings("ignore", category=UserWarning, module="langchain_core")
-
 import argparse
 import logging
+import os
+import warnings
 from pathlib import Path
 
 from rich.console import Console
 from rich.panel import Panel
 
 
+warnings.filterwarnings("ignore", category=FutureWarning, module="smolagents")
+warnings.filterwarnings("ignore", category=UserWarning, module="langchain_core")
+
 console = Console()
+CODE_EXECUTORS = {"host", "docker"}
+DEFAULT_CODE_EXECUTOR_TIMEOUT_SECONDS = 600
+DEFAULT_CODE_EXECUTOR_OUTPUT_LIMIT_BYTES = 4 * 1024 * 1024
+DEFAULT_CODE_EXECUTOR_MEMORY = "4g"
+DEFAULT_CODE_EXECUTOR_CPUS = "4"
+DEFAULT_CODE_EXECUTOR_PIDS_LIMIT = 512
+
+
+def load_cli_env() -> None:
+    try:
+        import dotenv
+    except ImportError:
+        return
+    dotenv.load_dotenv()
+
+
+class WebAIArgumentParser(argparse.ArgumentParser):
+    def parse_args(self, args=None, namespace=None):
+        parsed = super().parse_args(args, namespace)
+        validate_cli_args(parsed, self)
+        return parsed
+
+
+def validate_cli_args(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
+    if args.code_executor not in CODE_EXECUTORS:
+        parser.error(
+            "CODE_EXECUTOR/--code-executor must be one of: "
+            + ", ".join(sorted(CODE_EXECUTORS))
+        )
+    args.code_executor_timeout_seconds = parse_positive_int(
+        args.code_executor_timeout_seconds,
+        "CODE_EXECUTOR_TIMEOUT_SECONDS/--code-executor-timeout-seconds",
+        parser,
+    )
+    args.code_executor_output_limit_bytes = parse_positive_int(
+        args.code_executor_output_limit_bytes,
+        "CODE_EXECUTOR_OUTPUT_LIMIT_BYTES/--code-executor-output-limit-bytes",
+        parser,
+    )
+    args.code_executor_pids_limit = parse_positive_int(
+        args.code_executor_pids_limit,
+        "CODE_EXECUTOR_PIDS_LIMIT/--code-executor-pids-limit",
+        parser,
+    )
+    if args.code_executor == "docker" and not args.code_executor_image:
+        parser.error(
+            "--code-executor-image or CODE_EXECUTOR_IMAGE is required when "
+            "--code-executor=docker"
+        )
+
+
+def parse_positive_int(
+    value: int | str,
+    name: str,
+    parser: argparse.ArgumentParser,
+) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parser.error(f"{name} must be a positive integer")
+    if parsed <= 0:
+        parser.error(f"{name} must be a positive integer")
+    return parsed
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser()
+    load_cli_env()
+    parser = WebAIArgumentParser()
     parser.add_argument(
         "--prjdir",
         help="Directory for project generating",
@@ -40,6 +105,55 @@ def build_parser() -> argparse.ArgumentParser:
         help="Ask for user feedback after the agent confirms completion",
         action="store_true",
     )
+    parser.add_argument(
+        "--code-executor",
+        default=os.getenv("CODE_EXECUTOR", "host"),
+        help="Where generated Python scripts are executed. Default: host.",
+    )
+    parser.add_argument(
+        "--code-executor-image",
+        default=os.getenv("CODE_EXECUTOR_IMAGE"),
+        help="Docker image used when --code-executor=docker.",
+    )
+    parser.add_argument(
+        "--code-executor-network",
+        default=os.getenv("CODE_EXECUTOR_DOCKER_NETWORK", "none"),
+        help="Docker network mode used when --code-executor=docker.",
+    )
+    parser.add_argument(
+        "--code-executor-timeout-seconds",
+        default=os.getenv(
+            "CODE_EXECUTOR_TIMEOUT_SECONDS",
+            str(DEFAULT_CODE_EXECUTOR_TIMEOUT_SECONDS),
+        ),
+        help="Maximum seconds a generated script may run. Default: 600.",
+    )
+    parser.add_argument(
+        "--code-executor-output-limit-bytes",
+        default=os.getenv(
+            "CODE_EXECUTOR_OUTPUT_LIMIT_BYTES",
+            str(DEFAULT_CODE_EXECUTOR_OUTPUT_LIMIT_BYTES),
+        ),
+        help="Maximum captured stdout/stderr bytes per stream. Default: 4194304.",
+    )
+    parser.add_argument(
+        "--code-executor-memory",
+        default=os.getenv("CODE_EXECUTOR_MEMORY", DEFAULT_CODE_EXECUTOR_MEMORY),
+        help="Docker memory limit for generated code. Default: 4g.",
+    )
+    parser.add_argument(
+        "--code-executor-cpus",
+        default=os.getenv("CODE_EXECUTOR_CPUS", DEFAULT_CODE_EXECUTOR_CPUS),
+        help="Docker CPU limit for generated code. Default: 4.",
+    )
+    parser.add_argument(
+        "--code-executor-pids-limit",
+        default=os.getenv(
+            "CODE_EXECUTOR_PIDS_LIMIT",
+            str(DEFAULT_CODE_EXECUTOR_PIDS_LIMIT),
+        ),
+        help="Docker pids limit for generated code. Default: 512.",
+    )
     parser.add_argument("taskspec", help="Path to task specification")
     return parser
 
@@ -62,7 +176,7 @@ def _main(argv: list[str] | None = None) -> int:
     validate_llm_config(llm_config)
 
     from dev_env import DevEnvConfig, prepare_dev_env
-    from lg_agent import create_agent, get_initial_state
+    from lg_agent import CodeExecutionConfig, create_agent, get_initial_state
     from logs import LOG_FILE
     from makesrs_prod import makesrs
 
@@ -121,6 +235,16 @@ def _main(argv: list[str] | None = None) -> int:
         spec=doc,
         prjdir=str(prj_dir),
         max_steps=50,
+        code_execution=CodeExecutionConfig(
+            executor=args.code_executor,
+            docker_image=args.code_executor_image or "",
+            docker_network=args.code_executor_network,
+            timeout_seconds=args.code_executor_timeout_seconds,
+            output_limit_bytes=args.code_executor_output_limit_bytes,
+            memory=args.code_executor_memory,
+            cpus=args.code_executor_cpus,
+            pids_limit=args.code_executor_pids_limit,
+        ),
     )
     agent = create_agent(
         args.enable_commits,

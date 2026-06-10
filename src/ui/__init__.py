@@ -1,1 +1,1 @@
-from .prompt import ask
+from .prompt import ask as ask

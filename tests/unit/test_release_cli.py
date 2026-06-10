@@ -32,6 +32,101 @@ def test_help_does_not_require_api_key():
     assert "--prjdir" in result.stdout
 
 
+def test_parser_accepts_docker_code_executor(monkeypatch):
+    monkeypatch.syspath_prepend(str(ROOT / "src"))
+
+    import main
+
+    args = main.build_parser().parse_args(
+        [
+            "--prjdir",
+            "/tmp/project",
+            "--docpath",
+            "/tmp/doc.md",
+            "--code-executor",
+            "docker",
+            "--code-executor-image",
+            "webai-tool:test",
+            "--code-executor-network",
+            "none",
+            "/tmp/task.txt",
+        ]
+    )
+
+    assert args.code_executor == "docker"
+    assert args.code_executor_image == "webai-tool:test"
+    assert args.code_executor_network == "none"
+
+
+def test_parser_reads_code_executor_defaults_from_env(monkeypatch):
+    monkeypatch.syspath_prepend(str(ROOT / "src"))
+    monkeypatch.setenv("CODE_EXECUTOR", "docker")
+    monkeypatch.setenv("CODE_EXECUTOR_IMAGE", "webai-tool:env")
+    monkeypatch.setenv("CODE_EXECUTOR_DOCKER_NETWORK", "bridge")
+
+    import main
+
+    args = main.build_parser().parse_args(
+        [
+            "--prjdir",
+            "/tmp/project",
+            "--docpath",
+            "/tmp/doc.md",
+            "/tmp/task.txt",
+        ]
+    )
+
+    assert args.code_executor == "docker"
+    assert args.code_executor_image == "webai-tool:env"
+    assert args.code_executor_network == "bridge"
+
+
+def test_parser_rejects_invalid_code_executor_env(monkeypatch):
+    monkeypatch.syspath_prepend(str(ROOT / "src"))
+    monkeypatch.setenv("CODE_EXECUTOR", "bogus")
+
+    import main
+
+    try:
+        main.build_parser().parse_args(
+            [
+                "--prjdir",
+                "/tmp/project",
+                "--docpath",
+                "/tmp/doc.md",
+                "/tmp/task.txt",
+            ]
+        )
+    except SystemExit as exc:
+        assert exc.code == 2
+    else:
+        raise AssertionError("invalid CODE_EXECUTOR should fail at parse time")
+
+
+def test_parser_requires_image_for_docker_executor(monkeypatch):
+    monkeypatch.syspath_prepend(str(ROOT / "src"))
+    monkeypatch.delenv("CODE_EXECUTOR_IMAGE", raising=False)
+
+    import main
+
+    try:
+        main.build_parser().parse_args(
+            [
+                "--prjdir",
+                "/tmp/project",
+                "--docpath",
+                "/tmp/doc.md",
+                "--code-executor",
+                "docker",
+                "/tmp/task.txt",
+            ]
+        )
+    except SystemExit as exc:
+        assert exc.code == 2
+    else:
+        raise AssertionError("docker executor should require an explicit image")
+
+
 def test_run_without_api_key_reports_clear_configuration_error(tmp_path):
     doc_path = tmp_path / "project-doc.md"
     task_path = tmp_path / "task.txt"
@@ -82,6 +177,7 @@ def test_ref_project_flow_creates_fresh_output_dir_before_writing_doc(
 
     lg_agent_module = types.ModuleType("lg_agent")
     lg_agent_module.get_initial_state = lambda **kwargs: kwargs
+    lg_agent_module.CodeExecutionConfig = lambda **kwargs: kwargs
 
     class Agent:
         def invoke(self, state, config):
@@ -142,6 +238,7 @@ def test_keyboard_interrupt_reports_short_message(tmp_path, monkeypatch, capsys)
 
     lg_agent_module = types.ModuleType("lg_agent")
     lg_agent_module.get_initial_state = lambda **kwargs: kwargs
+    lg_agent_module.CodeExecutionConfig = lambda **kwargs: kwargs
 
     class Agent:
         def invoke(self, state, config):

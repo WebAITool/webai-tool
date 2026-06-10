@@ -1863,6 +1863,7 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "gitpython" },
+    { name = "httpx" },
     { name = "langchain-core" },
     { name = "langchain-experimental" },
     { name = "langchain-openai" },
@@ -1887,6 +1888,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "gitpython", specifier = ">=3.1.0" },
+    { name = "httpx", specifier = ">=0.28.0" },
     { name = "langchain-core", specifier = ">=1.2.20" },
     { name = "langchain-experimental", specifier = ">=0.4.1" },
     { name = "langchain-openai", specifier = ">=1.1.11" },
