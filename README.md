@@ -241,6 +241,11 @@ resource bounds: 600 seconds, 4 GiB memory, 4 CPUs, 512 pids, and 4 MiB captured
 output per stream. Override these only when the generated code intentionally
 needs more:
 
+Use the WebAI Tool release image for `--code-executor-image`. Do not use a base
+image such as `python:3.12-slim` for benchmarks: generated scripts may need
+tools that the release image installs, including `git`, `node`, `npm`, and
+`tree`.
+
 ```bash
 CODE_EXECUTOR=docker
 CODE_EXECUTOR_IMAGE=webai-tool:release

@@ -195,10 +195,55 @@ def test_thinker_forces_initial_inspection_before_existing_file_edits(monkeypatc
     update = thinker(state)
 
     assert update["current_plan"].startswith(
-        "Inspect the smallest relevant snippets before editing."
+        "Inspect the smallest relevant snippets needed for this requested change."
     )
     assert "backend/schema.sql" in update["current_plan"]
     assert "backend/app/routes/auth.py" in update["current_plan"]
+    assert "Modify backend/schema.sql" not in update["current_plan"]
+    assert "use bcrypt" not in update["current_plan"]
+
+
+def test_initial_inspection_guard_filters_nonexistent_paths(tmp_path, monkeypatch):
+    lg_agent = _load_lg_agent(monkeypatch)
+    (tmp_path / "backend").mkdir()
+    (tmp_path / "backend" / "schema.sql").write_text("CREATE TABLE users();\n")
+    state = lg_agent.get_initial_state(goal="hash passwords", spec="", prjdir=str(tmp_path))
+
+    plan = lg_agent.force_initial_inspection_for_existing_file_edits(
+        "Modify backend/schema.sql with a Python script saved as script_name.py.",
+        state,
+    )
+
+    assert "backend/schema.sql" in plan
+    assert "script_name.py" not in plan
+
+
+def test_thinker_prompt_includes_current_git_diff(monkeypatch):
+    lg_agent = _load_lg_agent(monkeypatch)
+    thinker = lg_agent.make_thinker(object())
+    captured = {}
+    state = lg_agent.get_initial_state(goal="hash passwords", spec="", prjdir="/tmp/project")
+
+    monkeypatch.setattr(lg_agent, "make_tree", lambda prjdir: "backend/app/routes/auth.py")
+    monkeypatch.setattr(
+        lg_agent,
+        "get_git_diff",
+        lambda prjdir: "diff --git a/backend/app/routes/auth.py b/backend/app/routes/auth.py\n+import bcrypt",
+    )
+
+    def fake_invoke(llm, system_prompt, user_prompt):
+        captured["system_prompt"] = system_prompt
+        captured["user_prompt"] = user_prompt
+        return "[DONE]"
+
+    monkeypatch.setattr(lg_agent, "invoke_text", fake_invoke)
+
+    update = thinker(state)
+
+    assert update["current_plan"] == "[DONE]"
+    assert "current git diff already satisfies" in captured["system_prompt"]
+    assert "CURRENT GIT DIFF" in captured["user_prompt"]
+    assert "+import bcrypt" in captured["user_prompt"]
 
 
 def test_initial_inspection_guard_keeps_new_file_plan(monkeypatch):
@@ -211,6 +256,14 @@ def test_initial_inspection_guard_keeps_new_file_plan(monkeypatch):
     )
 
     assert plan == "Create RESULT.txt with OK."
+
+
+def test_edit_plan_with_print_is_not_read_only_inspection(monkeypatch):
+    lg_agent = _load_lg_agent(monkeypatch)
+
+    assert not lg_agent.is_inspection_plan(
+        "Update RESULT.txt and print confirmation after writing."
+    )
 
 
 def test_implementor_uses_llm_for_inspection_plans(monkeypatch):
@@ -262,6 +315,31 @@ def test_verify_completion_includes_actionable_feedback(monkeypatch):
     assert update["completion_failures"] == 0
     assert "/commit" not in captured["user_prompt"]
     assert "append SUPER OK to RESULT.txt" in captured["user_prompt"]
+
+
+def test_verify_completion_includes_current_git_diff(monkeypatch):
+    lg_agent = _load_lg_agent(monkeypatch)
+    verifier = lg_agent.make_verify_completion(object())
+    captured = {}
+    state = lg_agent.get_initial_state(goal="hash passwords", spec="", prjdir="/tmp/project")
+
+    monkeypatch.setattr(
+        lg_agent,
+        "get_git_diff",
+        lambda prjdir: "diff --git a/backend/schema.sql b/backend/schema.sql\n+    \"password\" VARCHAR(60) NOT NULL,",
+    )
+
+    def fake_invoke(llm, system_prompt, user_prompt):
+        captured["user_prompt"] = user_prompt
+        return "YES"
+
+    monkeypatch.setattr(lg_agent, "invoke_text", fake_invoke)
+
+    update = verifier(state)
+
+    assert update["current_plan"] == "[CONFIRMED_DONE]"
+    assert "CURRENT GIT DIFF" in captured["user_prompt"]
+    assert "VARCHAR(60)" in captured["user_prompt"]
 
 
 def test_route_after_verification_returns_to_feedback_after_repeated_failures(monkeypatch):
@@ -499,6 +577,7 @@ def test_execute_code_records_failure_after_retry_exhaustion(monkeypatch):
     update = lg_agent.execute_code(state)
 
     assert update["implementor_retries"] == 3
+    assert update["last_failed_code"] == "bad code"
     assert "chat_history" in update
     assert "SyntaxError: bad code" in update["chat_history"][-1]
     assert "Result: FAILURE" in update["chat_history"][-1]
@@ -525,10 +604,120 @@ def test_execute_code_clears_pending_feedback_after_success(monkeypatch):
     state["current_plan"] = "Append SUPER OK."
     state["current_code"] = "pass"
     state["pending_feedback"] = "append SUPER OK"
+    state["last_failed_code"] = "raise RuntimeError('old failure')"
 
     update = lg_agent.execute_code(state)
 
     assert update["pending_feedback"] == ""
+    assert update["last_failed_code"] == ""
+
+
+def test_execute_code_records_git_diff_after_success(monkeypatch):
+    lg_agent = _load_lg_agent(monkeypatch)
+
+    monkeypatch.setattr(
+        lg_agent,
+        "execute_python_code",
+        lambda code, prjdir, **kwargs: lg_agent.ExecutionResult(
+            success=True,
+            returncode=0,
+            stdout="patched",
+            stderr="",
+        ),
+    )
+    monkeypatch.setattr(
+        lg_agent,
+        "get_git_diff",
+        lambda prjdir: "diff --git a/RESULT.txt b/RESULT.txt\n+OK",
+    )
+    state = lg_agent.get_initial_state(
+        goal="create result",
+        spec="",
+        prjdir="/tmp/project",
+    )
+    state["current_plan"] = "Create RESULT.txt"
+    state["current_code"] = "pass"
+
+    update = lg_agent.execute_code(state)
+
+    history_entry = update["chat_history"][-1]
+    assert "Result: SUCCESS" in history_entry
+    assert "GIT DIFF:" in history_entry
+    assert "+OK" in history_entry
+
+
+def test_execute_code_treats_failed_inspection_stdout_as_success(monkeypatch):
+    lg_agent = _load_lg_agent(monkeypatch)
+
+    monkeypatch.setattr(
+        lg_agent,
+        "execute_python_code",
+        lambda code, prjdir, **kwargs: lg_agent.ExecutionResult(
+            success=False,
+            returncode=1,
+            stdout="backend/schema.sql\npassword VARCHAR(255)",
+            stderr="ValueError: snippet end not found",
+        ),
+    )
+    state = lg_agent.get_initial_state(
+        goal="hash passwords",
+        spec="",
+        prjdir="/tmp/project",
+    )
+    state["current_plan"] = "Inspect backend/schema.sql and print password snippets."
+    state["current_code"] = "print('password')\nraise ValueError('snippet end not found')"
+
+    update = lg_agent.execute_code(state)
+
+    assert update["last_error"] == ""
+    assert update["implementor_retries"] == 0
+    assert "chat_history" in update
+    assert "Result: INSPECTION_OUTPUT_WITH_ERROR" in update["chat_history"][-1]
+    assert "password VARCHAR(255)" in update["chat_history"][-1]
+    assert update["last_failed_code"] == ""
+
+
+def test_execute_code_treats_python_syntax_error_as_failure(tmp_path, monkeypatch):
+    lg_agent = _load_lg_agent(monkeypatch)
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=tmp_path,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test User"],
+        cwd=tmp_path,
+        check=True,
+    )
+    app_path = tmp_path / "app.py"
+    app_path.write_text("print('ok')\n", encoding="utf-8")
+    subprocess.run(["git", "add", "app.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-m", "seed"], cwd=tmp_path, check=True)
+
+    def fake_execute(code, prjdir, **kwargs):
+        app_path.write_text("if True\n    pass\n", encoding="utf-8")
+        return lg_agent.ExecutionResult(
+            success=True,
+            returncode=0,
+            stdout="ok",
+            stderr="",
+        )
+
+    monkeypatch.setattr(lg_agent, "execute_python_code", fake_execute)
+    state = lg_agent.get_initial_state(
+        goal="break app",
+        spec="",
+        prjdir=str(tmp_path),
+    )
+    state["current_plan"] = "Modify app.py."
+    state["current_code"] = "bad edit"
+
+    update = lg_agent.execute_code(state)
+
+    assert update["implementor_retries"] == 1
+    assert "Python syntax validation failed" in update["last_error"]
+    assert update["last_failed_code"] == "bad edit"
 
 
 def test_execute_code_compacts_large_stdout_in_history(monkeypatch):
@@ -559,6 +748,35 @@ def test_execute_code_compacts_large_stdout_in_history(monkeypatch):
     assert len(history_entry) <= lg_agent.HISTORY_ENTRY_LIMIT
     assert "truncated" in history_entry
     assert "KEEP_TAIL" in history_entry
+
+
+def test_implementor_retry_includes_previous_failed_script(monkeypatch):
+    lg_agent = _load_lg_agent(monkeypatch)
+    captured = {}
+
+    class RepairLLM:
+        def invoke(self, messages):
+            captured["messages"] = messages
+            return types.SimpleNamespace(content="```python\nprint('fixed')\n```")
+
+    monkeypatch.setattr(lg_agent, "make_tree", lambda prjdir: "RESULT.txt")
+    implementor = lg_agent.make_implementor(RepairLLM())
+    state = lg_agent.get_initial_state(
+        goal="fix result",
+        spec="",
+        prjdir="/tmp/project",
+    )
+    state["current_plan"] = "Update RESULT.txt"
+    state["last_error"] = "NameError: old_name"
+    state["last_failed_code"] = "print(old_name)"
+
+    update = implementor(state)
+
+    prompt = captured["messages"][1][1]
+    assert "PREVIOUS FAILED SCRIPT" in prompt
+    assert "print(old_name)" in prompt
+    assert "Return a corrected full script" in prompt
+    assert update["current_code"] == "print('fixed')"
 
 
 def test_format_history_compacts_total_history(monkeypatch):

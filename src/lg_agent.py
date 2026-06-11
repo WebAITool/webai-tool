@@ -1,3 +1,4 @@
+import ast
 import logging
 import os
 import re
@@ -6,6 +7,7 @@ import sys
 import tempfile
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import List, TypedDict
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -85,6 +87,7 @@ class AgentState(TypedDict):
     human_feedbacks: List[str]
     current_plan: str
     current_code: str
+    last_failed_code: str
     last_error: str
     implementor_retries: int
     iterations: int
@@ -521,6 +524,15 @@ def has_done_marker(plan: str) -> bool:
     return re.search(r"\[\s*DONE\s*\]", plan, flags=re.IGNORECASE) is not None
 
 
+def is_inspection_plan(plan: str) -> bool:
+    normalized = plan.strip().lower()
+    if "do not modify files" in normalized:
+        return True
+    if EDIT_PLAN_RE.search(plan):
+        return False
+    return INSPECTION_PLAN_RE.search(plan) is not None
+
+
 def prevent_premature_done(plan: str, pending_feedback: str) -> str:
     if not pending_feedback or not has_done_marker(plan):
         return plan
@@ -536,17 +548,30 @@ def force_initial_inspection_for_existing_file_edits(
 ) -> str:
     if state.get("chat_history"):
         return plan
-    if INSPECTION_PLAN_RE.search(plan):
+    if is_inspection_plan(plan):
         return plan
     if not EDIT_PLAN_RE.search(plan):
         return plan
     if not FILE_PATH_RE.search(plan):
         return plan
+    paths = []
+    for match in FILE_PATH_RE.findall(plan):
+        normalized = match.strip("`'\".,:;()[]{}")
+        if normalized and normalized not in paths:
+            paths.append(normalized)
+    existing_paths = [
+        path for path in paths
+        if os.path.isfile(os.path.join(state["prjdir"], path))
+    ]
+    if existing_paths:
+        paths = existing_paths
+    path_list = "\n".join(f"- {path}" for path in paths)
     return (
-        "Inspect the smallest relevant snippets before editing. "
-        "Print the exact current lines or compact function/table snippets "
-        "needed for this requested change, using project-relative paths only:\n"
-        f"{plan}"
+        "Inspect the smallest relevant snippets needed for this requested change. "
+        "Print exact current lines or compact function/table snippets from these "
+        "project-relative paths only:\n"
+        f"{path_list}\n"
+        "Do not modify files."
     )
 
 
@@ -585,6 +610,59 @@ def get_git_diff(prjdir: str) -> str:
     if result.returncode != 0:
         return ""
     return result.stdout.strip()
+
+
+def get_changed_python_files(prjdir: str) -> list[str]:
+    try:
+        from dev_env.git import is_sensitive_env_path
+
+        status = subprocess.run(
+            ["git", "status", "--short", "--untracked-files=all"],
+            cwd=prjdir,
+            capture_output=True,
+            text=True,
+        )
+    except Exception:
+        return []
+    if status.returncode != 0:
+        return []
+
+    paths: list[str] = []
+    for line in status.stdout.splitlines():
+        if len(line) < 4:
+            continue
+        status_code = line[:2]
+        path_text = line[3:].strip()
+        if "D" in status_code:
+            continue
+        if " -> " in path_text:
+            path_text = path_text.split(" -> ", 1)[1]
+        path_text = path_text.strip('"')
+        if not path_text.endswith(".py"):
+            continue
+        if is_sensitive_env_path(path_text):
+            continue
+        full_path = Path(prjdir) / path_text
+        if full_path.is_file() and path_text not in paths:
+            paths.append(path_text)
+    return paths
+
+
+def validate_changed_python_syntax(prjdir: str) -> str:
+    errors: list[str] = []
+    for relative_path in get_changed_python_files(prjdir):
+        full_path = Path(prjdir) / relative_path
+        try:
+            source = full_path.read_text(encoding="utf-8")
+            ast.parse(source, filename=relative_path)
+        except SyntaxError as exc:
+            location = f"{relative_path}:{exc.lineno or 0}:{exc.offset or 0}"
+            errors.append(f"{location}: {exc.msg}")
+        except OSError as exc:
+            errors.append(f"{relative_path}: could not read file: {exc}")
+    if not errors:
+        return ""
+    return "Python syntax validation failed:\n" + "\n".join(errors)
 
 
 def get_commit_preview(prjdir: str, dirty_files: list[str]) -> str:
@@ -724,6 +802,8 @@ def make_thinker(llm: OpenAICompatibleChatClient):
         else:
             history_text = "No previous actions."
         feedback_text = format_actionable_feedbacks(state)
+        current_diff = get_git_diff(state["prjdir"])
+        diff_text = current_diff or "No uncommitted non-sensitive git diff."
 
         system_prompt = (
             "You are the Architect agent of an autonomous coding system. "
@@ -735,7 +815,9 @@ def make_thinker(llm: OpenAICompatibleChatClient):
             "3. If file contents are needed, ask for the smallest relevant snippets, symbols, or line ranges; avoid full-file dumps unless the whole file is clearly needed.\n"
             "4. Treat user feedback as active follow-up requirements that may extend or supersede the original goal.\n"
             "5. Generated scripts run from the project root; use project-relative paths in plans, not host absolute project paths.\n"
-            "6. If the goal and all actionable user feedback are fully achieved, output only: [DONE]"
+            "6. Carefully read the latest script output and current git diff before planning more work.\n"
+            "7. If the current git diff already satisfies the goal and all actionable user feedback, output only: [DONE].\n"
+            "8. If the goal and all actionable user feedback are fully achieved, output only: [DONE]"
         )
         user_prompt = (
             f"PROJECT DIRECTORY HOST PATH: {state['prjdir']}\n"
@@ -746,6 +828,7 @@ def make_thinker(llm: OpenAICompatibleChatClient):
             f"{tree}\n\n"
             f"ACTION HISTORY:\n{history_text}\n\n"
             f"USER FEEDBACK:\n{feedback_text}\n\n"
+            f"CURRENT GIT DIFF (non-sensitive, uncommitted changes):\n{diff_text}\n\n"
             f"{last_result}"
             "Based on the current state, what is the exact next step?"
         )
@@ -781,9 +864,12 @@ def make_verify_completion(llm: OpenAICompatibleChatClient):
         )
         system_prompt = "You are the Architect agent."
         feedback_text = format_actionable_feedbacks(state)
+        current_diff = get_git_diff(state["prjdir"])
+        diff_text = current_diff or "No uncommitted non-sensitive git diff."
         user_prompt = (
             f"PROJECT GOAL:\n{state['goal']}\n\n"
             f"USER FEEDBACK:\n{feedback_text}\n\n"
+            f"CURRENT GIT DIFF (non-sensitive, uncommitted changes):\n{diff_text}\n\n"
             f"ACTION HISTORY:\n{format_history(state['chat_history'])}\n\n"
             "The previous step indicated [DONE]. Are the project goal and all "
             "actionable user feedback successfully applied to the codebase? "
@@ -859,7 +945,8 @@ def make_implementor(llm: OpenAICompatibleChatClient):
             "8. If a validation flag such as --check is required, make that path run before optional third-party imports so validation works in a fresh environment.\n"
             "9. Ignore host absolute project paths in the Architect task; convert them to paths relative to the current working directory.\n"
             "10. If the Architect task asks to inspect, read, print, show, or list snippets, do only that inspection and do not edit files.\n"
-            "11. Keep the script compact and robust; prefer direct exact replacements for known text, and avoid broad regex rewrites when a literal replacement is enough."
+            "11. Keep the script compact and robust; prefer direct exact replacements for known text, and avoid broad regex rewrites when a literal replacement is enough.\n"
+            "12. Edit scripts must be idempotent: if an old pattern is missing, first check whether the desired new state is already present and exit successfully if so."
         )
         user_prompt = (
             f"PROJECT DIRECTORY HOST PATH: {state['prjdir']}\n"
@@ -876,6 +963,14 @@ def make_implementor(llm: OpenAICompatibleChatClient):
                 f"{state['last_error']}\n"
                 "Fix the code and try again."
             )
+            if state.get("last_failed_code"):
+                user_prompt += (
+                    "\n\nPREVIOUS FAILED SCRIPT:\n"
+                    "```python\n"
+                    f"{compact_text(state['last_failed_code'], HISTORY_ENTRY_LIMIT)}\n"
+                    "```\n"
+                    "Return a corrected full script."
+                )
 
         with console.status(
             "[bold green]Generating implementation...[/bold green]",
@@ -927,6 +1022,19 @@ def execute_code(state: AgentState):
         ),
     )
     if result.success:
+        syntax_error = validate_changed_python_syntax(state["prjdir"])
+        if syntax_error:
+            result = ExecutionResult(
+                success=False,
+                returncode=1,
+                stdout=result.stdout,
+                stderr=(
+                    f"{result.stderr}\n{syntax_error}"
+                    if result.stderr
+                    else syntax_error
+                ),
+            )
+    if result.success:
         console.print(
             Panel(
                 "[bold green]Execution successful[/bold green]",
@@ -956,11 +1064,17 @@ def execute_code(state: AgentState):
             "Result: SUCCESS\n"
             f"STDOUT:\n{compact_text(result.stdout, SCRIPT_OUTPUT_HISTORY_LIMIT)}"
         )
+        if diff:
+            log_entry += (
+                "\nGIT DIFF:\n"
+                f"{compact_text(diff, SCRIPT_OUTPUT_HISTORY_LIMIT)}"
+            )
         return {
             "chat_history": state["chat_history"] + [compact_history_entry(log_entry)],
             "last_error": "",
             "implementor_retries": 0,
             "pending_feedback": "",
+            "last_failed_code": "",
         }
 
     next_retries = state["implementor_retries"] + 1
@@ -969,6 +1083,29 @@ def execute_code(state: AgentState):
         f"STDOUT:\n{compact_text(result.stdout, SCRIPT_OUTPUT_HISTORY_LIMIT)}\n"
         f"STDERR:\n{compact_text(result.stderr, SCRIPT_OUTPUT_HISTORY_LIMIT)}"
     )
+    if is_inspection_plan(state["current_plan"]) and result.stdout.strip():
+        console.print(
+            Panel(
+                (
+                    "[bold yellow]Inspection printed usable output before failing.[/bold yellow]\n"
+                    f"{error_report[:2500]}"
+                ),
+                title="[bold yellow]Inspection output[/bold yellow]",
+                border_style="yellow",
+            )
+        )
+        log_entry = (
+            f"Architect planned: {state['current_plan'][:500]}\n"
+            "Result: INSPECTION_OUTPUT_WITH_ERROR\n"
+            f"STDOUT:\n{compact_text(result.stdout, SCRIPT_OUTPUT_HISTORY_LIMIT)}\n"
+            f"STDERR:\n{compact_text(result.stderr, SCRIPT_OUTPUT_HISTORY_LIMIT)}"
+        )
+        return {
+            "chat_history": state["chat_history"] + [compact_history_entry(log_entry)],
+            "last_error": "",
+            "implementor_retries": 0,
+            "last_failed_code": "",
+        }
     console.print(
         Panel(
             error_report[:3000],
@@ -979,6 +1116,7 @@ def execute_code(state: AgentState):
     update = {
         "last_error": error_report,
         "implementor_retries": next_retries,
+        "last_failed_code": state["current_code"],
     }
     if next_retries >= 3:
         update["chat_history"] = state["chat_history"] + [
@@ -1190,6 +1328,7 @@ def get_initial_state(
             "human_feedbacks": [],
             "current_plan": "",
             "current_code": "",
+            "last_failed_code": "",
             "last_error": "",
             "implementor_retries": 0,
             "iterations": 0,
