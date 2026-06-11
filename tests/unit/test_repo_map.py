@@ -658,14 +658,69 @@ class TestBoundariesAndLimits:
                 f.write("SECRET_KEY=abc123\n")
             with open(os.path.join(tmpdir, ".env.local"), "w") as f:
                 f.write("DB_PASSWORD=secret\n")
+            with open(os.path.join(tmpdir, ".env.polza"), "w") as f:
+                f.write("API_KEY=secret\n")
+            with open(os.path.join(tmpdir, ".env.example"), "w") as f:
+                f.write("API_KEY=placeholder\n")
+            os.makedirs(os.path.join(tmpdir, ".env.secrets"))
+            with open(os.path.join(tmpdir, ".env.secrets", "secret_token.py"), "w") as f:
+                f.write("API_KEY='secret'\n")
             with open(os.path.join(tmpdir, "app.py"), "w") as f:
                 f.write("def main(): pass\n")
 
             gen = RepomapGenerator()
             result = gen.get_map(tmpdir)
+            result_lines = result.splitlines()
 
-            assert ".env" not in result
+            assert not any(line.endswith(".env") for line in result_lines)
+            assert not any(line.endswith(".env.local") for line in result_lines)
+            assert not any(line.endswith(".env.polza") for line in result_lines)
+            assert not any(".env.secrets" in line for line in result_lines)
+            assert "secret_token.py" not in result
+            assert any(line.endswith(".env.example") for line in result_lines)
             assert "app.py" in result
+        finally:
+            shutil.rmtree(tmpdir)
+
+    def test_env_directory_excluded_from_reference_graph(self):
+        """Sensitive .env directories should not be parsed by the repo graph."""
+        tmpdir = tempfile.mkdtemp()
+        try:
+            os.makedirs(os.path.join(tmpdir, ".env.secrets"))
+            with open(os.path.join(tmpdir, ".env.secrets", "secret_token.py"), "w") as f:
+                f.write("def leaked_secret_symbol(): pass\n")
+            with open(os.path.join(tmpdir, "app.py"), "w") as f:
+                f.write("def public_symbol(): pass\n")
+
+            gen = RepomapGenerator()
+            result = gen.get_map(tmpdir, show_references=True)
+            files_json = os.path.join(tmpdir, ".repo-graph", "files.json")
+            with open(files_json, encoding="utf-8") as f:
+                cached_files = f.read()
+
+            assert "public_symbol" in result
+            assert ".env.secrets" not in result
+            assert "secret_token.py" not in result
+            assert "leaked_secret_symbol" not in result
+            assert ".env.secrets" not in cached_files
+            assert "secret_token.py" not in cached_files
+        finally:
+            shutil.rmtree(tmpdir)
+
+    def test_env_directory_root_is_not_scanned(self):
+        """A selected .env* root should not expose its contents."""
+        tmpdir = tempfile.mkdtemp()
+        try:
+            root = os.path.join(tmpdir, ".env.secrets")
+            os.makedirs(root)
+            with open(os.path.join(root, "secret_token.py"), "w") as f:
+                f.write("def leaked_secret_symbol(): pass\n")
+
+            gen = RepomapGenerator()
+            result = gen.get_map(root, show_references=True)
+
+            assert result == "(empty project)"
+            assert not os.path.exists(os.path.join(root, ".repo-graph"))
         finally:
             shutil.rmtree(tmpdir)
 

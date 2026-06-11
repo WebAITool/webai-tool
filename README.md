@@ -56,9 +56,19 @@ Polza.ai-style example:
 
 ```env
 API_KEY=your-api-key
-LLM_API_BASE_URL=https://api.polza.ai/api/v1
+LLM_API_BASE_URL=https://polza.ai/api/v1
 LLM_MODEL=z-ai/glm-5.1
 FRONTEND_VISION_MODEL=qwen/qwen3-vl-8b-thinking
+```
+
+You can keep multiple local provider profiles and choose one at launch time:
+
+```env
+# .env.polza
+API_KEY=your-polza-api-key
+LLM_API_BASE_URL=https://polza.ai/api/v1
+LLM_MODEL=openai/gpt-5.4-mini@reasoning_effort=medium
+FRONTEND_VISION_MODEL=openai/gpt-5.4-mini@reasoning_effort=medium
 ```
 
 OpenRouter example:
@@ -86,19 +96,21 @@ Configuration variables:
 - `LLM_MODEL`: main model used by the agent workflow.
 - `FRONTEND_VISION_MODEL`: vision-capable model used for screenshot-based frontend review.
 
-Keep `.env` untracked. The file is ignored by `.gitignore` and excluded from the Docker build context.
+Keep local `.env*` files untracked. They are ignored by `.gitignore`, except
+for the tracked `.env.example`, and are excluded from the Docker build context.
 
 ## CLI Usage
 
 The main entrypoint is `src/main.py`:
 
 ```bash
-uv run python src/main.py --prjdir <output-project-dir> (--docpath <doc-file> | --refprjpath <reference-project-dir>) [--enable-commits] [--commit-branch <branch>] [--interactive] <taskspec-file>
+uv run python src/main.py [--env-file <env-file>] --prjdir <output-project-dir> (--docpath <doc-file> | --refprjpath <reference-project-dir>) [--enable-commits] [--commit-branch <branch>] [--interactive] <taskspec-file>
 ```
 
 Arguments:
 
 - `--prjdir`: directory where WebAI Tool creates or modifies the target project.
+- `--env-file`: optional. Loads provider and execution defaults from a local env file. When provided, the implicit `.env` fallback is not loaded.
 - `--docpath`: path to an existing project documentation/specification file.
 - `--refprjpath`: path to a reference project. WebAI Tool generates documentation from it before implementation.
 - `taskspec`: path to the task specification file that describes what the agent should build or change.

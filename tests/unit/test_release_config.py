@@ -1,5 +1,8 @@
 import importlib
+import importlib.util
+import os
 import subprocess
+import sys
 import tomllib
 from pathlib import Path
 
@@ -68,6 +71,78 @@ def test_load_llm_config_disables_read_timeout_with_zero(monkeypatch):
     config = llm_config.load_llm_config()
 
     assert config.read_timeout_seconds is None
+
+
+def test_load_env_files_uses_explicit_file_as_isolated_profile(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    monkeypatch.delenv("FRONTEND_VISION_MODEL", raising=False)
+    (tmp_path / ".env").write_text(
+        "\n".join(
+            [
+                "LLM_MODEL=provider/from-dotenv",
+                "FRONTEND_VISION_MODEL=provider/vision-from-dotenv",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    env_file = tmp_path / "agent.env"
+    env_file.write_text("export LLM_MODEL=provider/from-file\n", encoding="utf-8")
+
+    import llm_config
+
+    importlib.reload(llm_config)
+    llm_config.load_env_files(str(env_file))
+
+    assert os.environ["LLM_MODEL"] == "provider/from-file"
+    assert "FRONTEND_VISION_MODEL" not in os.environ
+
+
+def test_load_env_files_without_explicit_file_loads_dotenv_fallback(
+    tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    (tmp_path / ".env").write_text(
+        "LLM_MODEL=provider/from-dotenv\n",
+        encoding="utf-8",
+    )
+
+    import llm_config
+
+    importlib.reload(llm_config)
+    llm_config.load_env_files()
+
+    assert os.environ["LLM_MODEL"] == "provider/from-dotenv"
+
+
+def test_load_llm_config_can_skip_dotenv_loading(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("API_KEY", raising=False)
+    monkeypatch.delenv("LLM_API_BASE_URL", raising=False)
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    monkeypatch.delenv("FRONTEND_VISION_MODEL", raising=False)
+    (tmp_path / ".env").write_text(
+        "\n".join(
+            [
+                "API_KEY=dotenv-key",
+                "LLM_API_BASE_URL=https://example.test/v1",
+                "LLM_MODEL=provider/from-dotenv",
+                "FRONTEND_VISION_MODEL=provider/vision-from-dotenv",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    import llm_config
+
+    importlib.reload(llm_config)
+    config = llm_config.load_llm_config(load_dotenv=False)
+
+    assert config.api_key is None
+    assert config.api_base_url is None
+    assert config.model is None
+    assert config.frontend_vision_model is None
 
 
 def test_validate_llm_config_names_missing_api_key(monkeypatch):
@@ -173,3 +248,30 @@ def test_tracked_files_do_not_contain_openrouter_secret_prefix():
             continue
         content = path.read_text(encoding="utf-8", errors="ignore")
         assert secret_prefix not in content, f"secret-like token in {relative_path}"
+
+
+def test_transport_probe_rejects_missing_env_file(tmp_path, monkeypatch):
+    root = Path(__file__).resolve().parents[2]
+    module_path = root / "scripts" / "llm_transport_probe.py"
+    spec = importlib.util.spec_from_file_location("llm_transport_probe_test", module_path)
+    assert spec is not None
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "llm_transport_probe.py",
+            "--env-file",
+            str(tmp_path / "missing.env"),
+        ],
+    )
+
+    try:
+        module.parse_args()
+    except SystemExit as exc:
+        assert exc.code == 2
+    else:
+        raise AssertionError("missing probe --env-file should fail at parse time")

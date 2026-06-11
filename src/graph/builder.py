@@ -14,10 +14,13 @@ def build(root_path: str) -> RepoGraphLite:
     Uses incremental rebuild when <50% of files changed.
     """
     from graph.graph_store import GraphStore
-    from repo_map import IGNORED_DIRS, _EXT_TO_LANG
+    from repo_map import _EXT_TO_LANG, _should_include
     from repo_map import _extract_tags_and_receivers
     from graph.import_resolver import extract_imports
     from graph.type_resolver import extract_type_bindings
+
+    if not _should_include(os.path.basename(os.path.abspath(root_path)), is_dir=True):
+        return RepoGraphLite()
 
     store = GraphStore(root_path)
     current_files = _scan_mtimes(root_path)
@@ -38,6 +41,10 @@ def build(root_path: str) -> RepoGraphLite:
 
         # Re-parse stale files
         for filepath in stale:
+            if filepath not in current_files:
+                continue
+            if not _path_should_include(root_path, filepath, _should_include):
+                continue
             if not os.path.isfile(filepath):
                 continue
             ext = os.path.splitext(filepath)[1].lower()
@@ -69,8 +76,10 @@ def build(root_path: str) -> RepoGraphLite:
         all_receivers: list[ReceiverTag] = []
 
         for dirpath, dirnames, filenames in os.walk(root_path):
-            dirnames[:] = [d for d in dirnames if d not in IGNORED_DIRS]
+            dirnames[:] = [d for d in dirnames if _should_include(d, is_dir=True)]
             for fname in filenames:
+                if not _should_include(fname, is_dir=False):
+                    continue
                 filepath = os.path.join(dirpath, fname)
                 ext = os.path.splitext(fname)[1].lower()
                 lang = _EXT_TO_LANG.get(ext)
@@ -98,8 +107,10 @@ def build(root_path: str) -> RepoGraphLite:
     all_receivers_full: list[ReceiverTag] = []
 
     for dirpath, dirnames, filenames in os.walk(root_path):
-        dirnames[:] = [d for d in dirnames if d not in IGNORED_DIRS]
+        dirnames[:] = [d for d in dirnames if _should_include(d, is_dir=True)]
         for fname in filenames:
+            if not _should_include(fname, is_dir=False):
+                continue
             filepath = os.path.join(dirpath, fname)
             ext = os.path.splitext(fname)[1].lower()
             lang = _EXT_TO_LANG.get(ext)
@@ -137,14 +148,27 @@ def build(root_path: str) -> RepoGraphLite:
 
 def _scan_mtimes(root_path: str) -> dict[str, float]:
     """Walk root_path and collect file modification times."""
-    from repo_map import IGNORED_DIRS
+    from repo_map import _should_include
     mtimes = {}
     for dirpath, dirnames, filenames in os.walk(root_path):
-        dirnames[:] = [d for d in dirnames if d not in IGNORED_DIRS]
+        dirnames[:] = [d for d in dirnames if _should_include(d, is_dir=True)]
         for fname in filenames:
+            if not _should_include(fname, is_dir=False):
+                continue
             fp = os.path.join(dirpath, fname)
             try:
                 mtimes[fp] = os.path.getmtime(fp)
             except OSError:
                 pass
     return mtimes
+
+
+def _path_should_include(root_path: str, filepath: str, should_include) -> bool:
+    try:
+        relative_path = os.path.relpath(filepath, root_path)
+    except ValueError:
+        return False
+    parts = relative_path.split(os.sep)
+    if any(not should_include(part, is_dir=True) for part in parts[:-1]):
+        return False
+    return bool(parts) and should_include(parts[-1], is_dir=False)

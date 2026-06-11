@@ -351,6 +351,70 @@ def test_commit_preview_includes_untracked_file_diff(tmp_path, monkeypatch):
     assert "+OK" in preview
 
 
+def test_commit_preview_filters_sensitive_env_paths(tmp_path, monkeypatch):
+    lg_agent = _load_lg_agent(monkeypatch)
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    (tmp_path / "RESULT.txt").write_text("OK\n", encoding="utf-8")
+    (tmp_path / ".envrc").write_text("API_KEY=secret\n", encoding="utf-8")
+
+    preview = lg_agent.get_commit_preview(str(tmp_path), ["RESULT.txt", ".envrc"])
+
+    assert "RESULT.txt" in preview
+    assert ".envrc" not in preview
+    assert "secret" not in preview
+
+
+def test_post_execution_git_diff_filters_tracked_env_changes(tmp_path, monkeypatch):
+    lg_agent = _load_lg_agent(monkeypatch)
+    from dev_env import git as git_module
+
+    monkeypatch.setattr(git_module, "_is_initialized", False)
+    (tmp_path / ".gitignore").write_text("custom.log\n", encoding="utf-8")
+    git_module.init_git(tmp_path, "dev")
+    (tmp_path / ".gitignore").write_text("custom.log\n", encoding="utf-8")
+    (tmp_path / ".env.polza").write_text("API_KEY=old\n", encoding="utf-8")
+    (tmp_path / "RESULT.txt").write_text("OK\n", encoding="utf-8")
+    git_module._REPO.git.add("-f", ".env.polza")
+    git_module._REPO.git.add("RESULT.txt")
+    git_module._REPO.index.commit("seed", author=git_module._AGENT_ACTOR)
+
+    (tmp_path / ".env.polza").write_text("API_KEY=secret\n", encoding="utf-8")
+    (tmp_path / "RESULT.txt").write_text("OK\nSUPER OK\n", encoding="utf-8")
+
+    diff = lg_agent.get_git_diff(str(tmp_path))
+
+    assert "RESULT.txt" in diff
+    assert ".env.polza" not in diff
+    assert "secret" not in diff
+
+
+def test_post_execution_git_diff_works_without_commit_mode(tmp_path, monkeypatch):
+    lg_agent = _load_lg_agent(monkeypatch)
+    from dev_env import git as git_module
+
+    monkeypatch.setattr(git_module, "_is_initialized", False)
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=tmp_path,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test User"],
+        cwd=tmp_path,
+        check=True,
+    )
+    (tmp_path / "RESULT.txt").write_text("OK\n", encoding="utf-8")
+    subprocess.run(["git", "add", "RESULT.txt"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-m", "seed"], cwd=tmp_path, check=True)
+    (tmp_path / "RESULT.txt").write_text("OK\nSUPER OK\n", encoding="utf-8")
+
+    diff = lg_agent.get_git_diff(str(tmp_path))
+
+    assert "RESULT.txt" in diff
+    assert "+SUPER OK" in diff
+
+
 def test_extract_code_selects_python_block(monkeypatch):
     lg_agent = _load_lg_agent(monkeypatch)
 

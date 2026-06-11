@@ -16,7 +16,12 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from llm_client import LLMTransportError, OpenAICompatibleChatClient  # noqa: E402
-from llm_config import LLMConfig, load_llm_config, validate_llm_config  # noqa: E402
+from llm_config import (  # noqa: E402
+    LLMConfig,
+    load_env_files,
+    load_llm_config,
+    validate_llm_config,
+)
 
 
 DEFAULT_PROMPT = "Reply with exactly: pong"
@@ -58,22 +63,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--expected", default=EXPECTED_RESPONSE)
     parser.add_argument("--output-jsonl")
-    return parser.parse_args()
-
-
-def load_env_file(path: str | None) -> None:
-    if not path:
-        return
-    for raw_line in Path(path).read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        os.environ.setdefault(key.strip(), value.strip().strip("'\""))
+    args = parser.parse_args()
+    if args.env_file is not None and not Path(args.env_file).is_file():
+        parser.error(f"--env-file path does not exist: {args.env_file}")
+    return args
 
 
 def build_config(args: argparse.Namespace, stream: bool) -> LLMConfig:
-    config = load_llm_config()
+    config = load_llm_config(load_dotenv=False)
     config = replace(
         config,
         api_key=args.api_key or config.api_key,
@@ -139,7 +136,7 @@ def print_result(result: ProbeResult) -> None:
 
 def main() -> int:
     args = parse_args()
-    load_env_file(args.env_file)
+    load_env_files(args.env_file)
     args.model = args.model or os.getenv("LLM_MODEL")
     args.base_url = args.base_url or os.getenv("LLM_API_BASE_URL")
     args.api_key = args.api_key or os.getenv("API_KEY")

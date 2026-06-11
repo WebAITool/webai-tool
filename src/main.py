@@ -20,19 +20,56 @@ DEFAULT_CODE_EXECUTOR_CPUS = "4"
 DEFAULT_CODE_EXECUTOR_PIDS_LIMIT = 512
 
 
-def load_cli_env() -> None:
-    try:
-        import dotenv
-    except ImportError:
-        return
-    dotenv.load_dotenv()
+def load_cli_env(env_file: str | None = None) -> None:
+    from llm_config import load_env_files
+
+    load_env_files(env_file)
 
 
 class WebAIArgumentParser(argparse.ArgumentParser):
     def parse_args(self, args=None, namespace=None):
         parsed = super().parse_args(args, namespace)
+        if parsed.env_file is not None:
+            env_path = Path(parsed.env_file)
+            if not env_path.is_file():
+                self.error(f"--env-file path does not exist: {parsed.env_file}")
+            load_cli_env(str(env_path))
+        else:
+            load_cli_env()
+        apply_env_defaults(parsed)
         validate_cli_args(parsed, self)
         return parsed
+
+
+def apply_env_defaults(args: argparse.Namespace) -> None:
+    if args.code_executor is None:
+        args.code_executor = os.getenv("CODE_EXECUTOR", "host")
+    if args.code_executor_image is None:
+        args.code_executor_image = os.getenv("CODE_EXECUTOR_IMAGE")
+    if args.code_executor_network is None:
+        args.code_executor_network = os.getenv("CODE_EXECUTOR_DOCKER_NETWORK", "none")
+    if args.code_executor_timeout_seconds is None:
+        args.code_executor_timeout_seconds = os.getenv(
+            "CODE_EXECUTOR_TIMEOUT_SECONDS",
+            str(DEFAULT_CODE_EXECUTOR_TIMEOUT_SECONDS),
+        )
+    if args.code_executor_output_limit_bytes is None:
+        args.code_executor_output_limit_bytes = os.getenv(
+            "CODE_EXECUTOR_OUTPUT_LIMIT_BYTES",
+            str(DEFAULT_CODE_EXECUTOR_OUTPUT_LIMIT_BYTES),
+        )
+    if args.code_executor_memory is None:
+        args.code_executor_memory = os.getenv(
+            "CODE_EXECUTOR_MEMORY",
+            DEFAULT_CODE_EXECUTOR_MEMORY,
+        )
+    if args.code_executor_cpus is None:
+        args.code_executor_cpus = os.getenv("CODE_EXECUTOR_CPUS", DEFAULT_CODE_EXECUTOR_CPUS)
+    if args.code_executor_pids_limit is None:
+        args.code_executor_pids_limit = os.getenv(
+            "CODE_EXECUTOR_PIDS_LIMIT",
+            str(DEFAULT_CODE_EXECUTOR_PIDS_LIMIT),
+        )
 
 
 def validate_cli_args(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
@@ -78,8 +115,11 @@ def parse_positive_int(
 
 
 def build_parser() -> argparse.ArgumentParser:
-    load_cli_env()
     parser = WebAIArgumentParser()
+    parser.add_argument(
+        "--env-file",
+        help="Optional env file to load before resolving environment-backed defaults.",
+    )
     parser.add_argument(
         "--prjdir",
         help="Directory for project generating",
@@ -107,51 +147,42 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--code-executor",
-        default=os.getenv("CODE_EXECUTOR", "host"),
+        default=None,
         help="Where generated Python scripts are executed. Default: host.",
     )
     parser.add_argument(
         "--code-executor-image",
-        default=os.getenv("CODE_EXECUTOR_IMAGE"),
+        default=None,
         help="Docker image used when --code-executor=docker.",
     )
     parser.add_argument(
         "--code-executor-network",
-        default=os.getenv("CODE_EXECUTOR_DOCKER_NETWORK", "none"),
+        default=None,
         help="Docker network mode used when --code-executor=docker.",
     )
     parser.add_argument(
         "--code-executor-timeout-seconds",
-        default=os.getenv(
-            "CODE_EXECUTOR_TIMEOUT_SECONDS",
-            str(DEFAULT_CODE_EXECUTOR_TIMEOUT_SECONDS),
-        ),
+        default=None,
         help="Maximum seconds a generated script may run. Default: 600.",
     )
     parser.add_argument(
         "--code-executor-output-limit-bytes",
-        default=os.getenv(
-            "CODE_EXECUTOR_OUTPUT_LIMIT_BYTES",
-            str(DEFAULT_CODE_EXECUTOR_OUTPUT_LIMIT_BYTES),
-        ),
+        default=None,
         help="Maximum captured stdout/stderr bytes per stream. Default: 4194304.",
     )
     parser.add_argument(
         "--code-executor-memory",
-        default=os.getenv("CODE_EXECUTOR_MEMORY", DEFAULT_CODE_EXECUTOR_MEMORY),
+        default=None,
         help="Docker memory limit for generated code. Default: 4g.",
     )
     parser.add_argument(
         "--code-executor-cpus",
-        default=os.getenv("CODE_EXECUTOR_CPUS", DEFAULT_CODE_EXECUTOR_CPUS),
+        default=None,
         help="Docker CPU limit for generated code. Default: 4.",
     )
     parser.add_argument(
         "--code-executor-pids-limit",
-        default=os.getenv(
-            "CODE_EXECUTOR_PIDS_LIMIT",
-            str(DEFAULT_CODE_EXECUTOR_PIDS_LIMIT),
-        ),
+        default=None,
         help="Docker pids limit for generated code. Default: 512.",
     )
     parser.add_argument("taskspec", help="Path to task specification")
@@ -172,7 +203,7 @@ def _main(argv: list[str] | None = None) -> int:
 
     from llm_config import load_llm_config, validate_llm_config
 
-    llm_config = load_llm_config()
+    llm_config = load_llm_config(load_dotenv=False)
     validate_llm_config(llm_config)
 
     from dev_env import DevEnvConfig, prepare_dev_env

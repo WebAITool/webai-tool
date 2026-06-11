@@ -367,6 +367,8 @@ def _parse_vue_script(script_node, filepath: str) -> list[Tag]:
 
 def _should_include(name: str, is_dir: bool) -> bool:
     """Return True if the file/dir should be included in the map."""
+    if name.startswith(".env"):
+        return not is_dir and name == ".env.example"
     if is_dir:
         return name not in IGNORED_DIRS
     if name in IGNORED_FILES:
@@ -455,6 +457,8 @@ class RepomapGenerator:
         root_path = os.path.abspath(root_path)
         if not os.path.isdir(root_path):
             return f"Error: '{root_path}' is not a valid directory."
+        if not _should_include(os.path.basename(root_path), is_dir=True):
+            return "(empty project)"
 
         _ensure_repo_graph_gitignore(root_path)
 

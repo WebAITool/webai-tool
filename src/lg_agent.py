@@ -552,8 +552,30 @@ def force_initial_inspection_for_existing_file_edits(
 
 def get_git_diff(prjdir: str) -> str:
     try:
+        from dev_env.git import is_sensitive_env_path
+
+        status = subprocess.run(
+            ["git", "status", "--short"],
+            cwd=prjdir,
+            capture_output=True,
+            text=True,
+        )
+        if status.returncode != 0:
+            return ""
+        diff_files = []
+        for line in status.stdout.splitlines():
+            path_text = line[3:].strip()
+            if " -> " in path_text:
+                paths = path_text.split(" -> ", 1)
+            else:
+                paths = [path_text]
+            for path in paths:
+                if path and not is_sensitive_env_path(path):
+                    diff_files.append(path)
+        if not diff_files:
+            return ""
         result = subprocess.run(
-            ["git", "diff", "--no-color"],
+            ["git", "diff", "--no-color", "--", *diff_files],
             cwd=prjdir,
             capture_output=True,
             text=True,
@@ -566,12 +588,26 @@ def get_git_diff(prjdir: str) -> str:
 
 
 def get_commit_preview(prjdir: str, dirty_files: list[str]) -> str:
-    if not dirty_files:
+    from dev_env.git import is_sensitive_env_path
+
+    preview_files: list[str] = []
+    for file_path in dirty_files:
+        if " -> " in file_path:
+            old_path, new_path = file_path.split(" -> ", 1)
+            if not (
+                is_sensitive_env_path(old_path)
+                or is_sensitive_env_path(new_path)
+            ):
+                preview_files.extend([old_path, new_path])
+        elif not is_sensitive_env_path(file_path):
+            preview_files.append(file_path)
+
+    if not preview_files:
         return "No changes to commit."
 
     preview_parts: list[str] = []
     status = subprocess.run(
-        ["git", "status", "--short"],
+        ["git", "status", "--short", "--", *preview_files],
         cwd=prjdir,
         capture_output=True,
         text=True,
@@ -580,7 +616,7 @@ def get_commit_preview(prjdir: str, dirty_files: list[str]) -> str:
         preview_parts.append(status.stdout.strip())
 
     diff = subprocess.run(
-        ["git", "diff", "--no-color"],
+        ["git", "diff", "--no-color", "--", *preview_files],
         cwd=prjdir,
         capture_output=True,
         text=True,
@@ -589,6 +625,8 @@ def get_commit_preview(prjdir: str, dirty_files: list[str]) -> str:
         preview_parts.append(diff.stdout.strip())
 
     for file_path in dirty_files:
+        if is_sensitive_env_path(file_path):
+            continue
         if " -> " in file_path:
             continue
         full_path = os.path.join(prjdir, file_path)

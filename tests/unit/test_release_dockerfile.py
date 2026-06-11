@@ -28,3 +28,13 @@ def test_docker_entrypoint_uses_release_cli_with_src_pythonpath():
 
     assert "ENV PYTHONPATH=/app/src" in dockerfile
     assert 'ENTRYPOINT ["/app/.venv/bin/python", "/app/src/main.py"]' in dockerfile
+
+
+def test_dockerignore_excludes_local_env_profiles():
+    dockerignore = (ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines()
+
+    assert ".env*" in dockerignore
+    assert "!.env.example" in dockerignore
+    assert "**/.env*" in dockerignore
+    assert "!**/.env.example" in dockerignore
+    assert "**/.env.example/**" in dockerignore

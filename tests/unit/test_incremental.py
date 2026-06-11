@@ -1,8 +1,15 @@
 # tests/unit/test_incremental.py
 """Tests for incremental reindex support."""
-import os
 import json
+import os
+import time
+from dataclasses import asdict
+
+from graph.builder import build
 from graph.graph_store import GraphStore
+from graph.models import ImportTag, SymbolNode
+from graph.repo_graph import RepoGraphLite
+from repo_map import Tag
 
 
 def test_get_stale_files_no_cache(tmp_path):
@@ -65,11 +72,6 @@ def test_get_stale_files_removed(tmp_path):
     assert stale == {"b.py"}
 
 
-from graph.repo_graph import RepoGraphLite
-from graph.models import ImportTag
-from repo_map import Tag
-
-
 def _make_graph(tags, imports=None, bindings=None, receivers=None):
     g = RepoGraphLite()
     g.build_from(tags, imports or [], bindings or [], receivers or [])
@@ -127,10 +129,6 @@ def test_remove_file_cleans_indexes():
     assert "func_a" not in g.by_name or not g.by_name["func_a"]
 
 
-import time
-from graph.builder import build
-
-
 def test_partial_rebuild(tmp_path):
     """Changing one file only re-parses that file, not the whole project."""
     # Create 2 files
@@ -152,3 +150,60 @@ def test_partial_rebuild(tmp_path):
     assert "func_a" in names  # unchanged file preserved
     assert "func_b_v2" in names  # changed file re-parsed
     assert "func_b" not in names  # old symbol gone
+
+
+def test_partial_rebuild_drops_legacy_env_cache_nodes(tmp_path):
+    """Old cached .env* symbols must be removed, not re-parsed."""
+    public_files = []
+    for index in range(8):
+        path = tmp_path / f"public_{index}.py"
+        path.write_text(f"def public_{index}(): pass\n", encoding="utf-8")
+        public_files.append(path)
+
+    secret_dir = tmp_path / ".env.secrets"
+    secret_dir.mkdir()
+    secret_file = secret_dir / "secret_token.py"
+    secret_file.write_text("def leaked_secret_symbol(): pass\n", encoding="utf-8")
+
+    cache_dir = tmp_path / ".repo-graph"
+    cache_dir.mkdir()
+    cached_files = {str(path): os.path.getmtime(path) for path in public_files}
+    cached_files[str(secret_file)] = os.path.getmtime(secret_file)
+    leaked_node = SymbolNode(
+        id=f"Function:leaked_secret_symbol:{secret_file}",
+        kind="Function",
+        name="leaked_secret_symbol",
+        file=str(secret_file),
+        line=1,
+        scope="",
+        is_exported=False,
+    )
+    (cache_dir / "files.json").write_text(json.dumps(cached_files), encoding="utf-8")
+    (cache_dir / "nodes.json").write_text(
+        json.dumps([asdict(leaked_node)]),
+        encoding="utf-8",
+    )
+    (cache_dir / "edges.json").write_text("[]", encoding="utf-8")
+
+    graph = build(str(tmp_path))
+    names = [node.name for node in graph.nodes.values()]
+    node_files = [node.file for node in graph.nodes.values()]
+    files_json = (cache_dir / "files.json").read_text(encoding="utf-8")
+
+    assert "leaked_secret_symbol" not in names
+    assert str(secret_file) not in node_files
+    assert ".env.secrets" not in files_json
+
+
+def test_build_ignores_env_directory_root(tmp_path):
+    root = tmp_path / ".env.secrets"
+    root.mkdir()
+    (root / "secret_token.py").write_text(
+        "def leaked_secret_symbol(): pass\n",
+        encoding="utf-8",
+    )
+
+    graph = build(str(root))
+
+    assert not graph.nodes
+    assert not (root / ".repo-graph").exists()

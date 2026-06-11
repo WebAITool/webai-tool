@@ -20,8 +20,9 @@ _GITIGNORE = """
 **/.cache
 **/.eslintcache
 
-**/.env
-**/.env.*
+**/.env*
+!**/.env.example
+**/.env.example/**
 **/.DS_Store
 **/.Thumbs.db
 **/.idea
@@ -40,6 +41,61 @@ _GITIGNORE = """
 """
 
 
+def is_sensitive_env_path(path: str) -> bool:
+    parts = path.replace("\\", "/").split("/")
+    for index, part in enumerate(parts):
+        if not part.startswith(".env"):
+            continue
+        if part == ".env.example" and index == len(parts) - 1:
+            continue
+        return True
+    return False
+
+
+def _unstage_sensitive_env_paths() -> None:
+    try:
+        staged = _REPO.git.diff("--cached", "--name-only").splitlines()
+    except git.GitCommandError:
+        return
+    sensitive = [path for path in staged if is_sensitive_env_path(path)]
+    if sensitive:
+        try:
+            _REPO.git.reset("HEAD", "--", *sensitive)
+        except git.GitCommandError:
+            _REPO.index.remove(sensitive, cached=True, r=True)
+
+
+def _unstage_paths_not_in(allowed_paths: set[str]) -> None:
+    try:
+        staged = _REPO.git.diff("--cached", "--name-only").splitlines()
+    except git.GitCommandError:
+        return
+    extra = [path for path in staged if path not in allowed_paths]
+    if extra:
+        _REPO.git.reset("HEAD", "--", *extra)
+
+
+def _ensure_gitignore_rules(gitignore: Path) -> None:
+    if not gitignore.exists():
+        gitignore.write_text(_GITIGNORE, encoding="utf-8")
+        return
+
+    content = gitignore.read_text(encoding="utf-8")
+    block = (
+        "# WebAITool sensitive env files\n"
+        "**/.env*\n"
+        "!**/.env.example\n"
+        "**/.env.example/**\n"
+    )
+    if block not in content:
+        with gitignore.open("a", encoding="utf-8") as file:
+            if content and not content.endswith("\n"):
+                file.write("\n")
+            if content:
+                file.write("\n")
+            file.write(block)
+
+
 def init_git(prjdir: Path, commit_branch: str) -> None:
     global _is_initialized
     if _is_initialized:
@@ -54,9 +110,7 @@ def init_git(prjdir: Path, commit_branch: str) -> None:
     _INDEX = _REPO.index
 
     gitignore = (prjdir / '.gitignore')
-    if not gitignore.exists():
-        with gitignore.open("+a") as file:
-            file.write(_GITIGNORE)
+    _ensure_gitignore_rules(gitignore)
 
     if commit_branch in _REPO.branches:
         _DEV_BRANCH = _REPO.branches[commit_branch]
@@ -88,17 +142,25 @@ def get_dirty_files() -> list[str]:
     if not _is_initialized:
         raise InvalidStateException()
 
+    _unstage_sensitive_env_paths()
+
     res = []
     for diff in _REPO.index.diff(None):
         if diff.deleted_file:
-            res.append(diff.a_path)
+            if not is_sensitive_env_path(diff.a_path):
+                res.append(diff.a_path)
         elif diff.renamed_file:
             if diff.a_path is not None and diff.b_path is not None:
-                res.append(diff.a_path + ' -> ' + diff.b_path)
+                if not (
+                    is_sensitive_env_path(diff.a_path)
+                    or is_sensitive_env_path(diff.b_path)
+                ):
+                    res.append(diff.a_path + ' -> ' + diff.b_path)
         else:
-            res.append(diff.b_path)
+            if not is_sensitive_env_path(diff.b_path):
+                res.append(diff.b_path)
 
-    res += _REPO.untracked_files
+    res += [path for path in _REPO.untracked_files if not is_sensitive_env_path(path)]
 
     logging.debug('git.get_dirty_files() -> ' + str(res))
     return res
@@ -114,17 +176,27 @@ def commit(files: list[str], message: str) -> None:
     if not _is_initialized:
         raise InvalidStateException()
 
+    _unstage_sensitive_env_paths()
+
     paths = []
     for file in files:
         if " -> " in file:
             old_path, new_path = file.split(" -> ", 1)
-            paths.extend([old_path, new_path])
+            if not (is_sensitive_env_path(old_path) or is_sensitive_env_path(new_path)):
+                paths.extend([old_path, new_path])
         else:
-            paths.append(file)
+            if not is_sensitive_env_path(file):
+                paths.append(file)
+
+    if not paths:
+        logging.debug("git.commit skipped: no non-sensitive files to commit")
+        return
 
     try:
         if paths:
             _REPO.git.add("-A", "--", *paths)
+            _unstage_sensitive_env_paths()
+            _unstage_paths_not_in(set(paths))
     except (OSError, git.GitCommandError) as e:
         raise FileNotFoundError(e.args)
     _REPO.index.commit(message, author=_AGENT_ACTOR, committer=_AGENT_ACTOR)

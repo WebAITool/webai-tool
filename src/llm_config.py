@@ -67,9 +67,26 @@ def _get_optional_float(name: str, default: float | None) -> float | None:
     return parsed
 
 
-def load_llm_config() -> LLMConfig:
-    if dotenv is not None:
-        dotenv.load_dotenv()
+def load_env_files(env_file: str | None = None) -> None:
+    if dotenv is None:
+        return
+    if env_file is not None:
+        dotenv.load_dotenv(env_file, override=False)
+        return
+    load_dotenv_fallback()
+
+
+def load_dotenv_fallback() -> None:
+    if dotenv is None:
+        return
+    dotenv_path = dotenv.find_dotenv(usecwd=True)
+    if dotenv_path:
+        dotenv.load_dotenv(dotenv_path, override=False)
+
+
+def load_llm_config(load_dotenv: bool = True) -> LLMConfig:
+    if load_dotenv and dotenv is not None:
+        load_env_files()
     return LLMConfig(
         api_key=os.getenv("API_KEY"),
         api_base_url=os.getenv("LLM_API_BASE_URL"),
